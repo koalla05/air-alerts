@@ -1,1 +1,8 @@
 .idea
+.venv/
+__pycache__/
+*.pyc
+*.parquet
+*.joblib
+.ipynb_checkpoints/
+data/raw/*.csv
