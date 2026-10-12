@@ -72,6 +72,7 @@ def create_ukraine_map(
     fig.update_layout(
         paper_bgcolor="#0e1117",
         plot_bgcolor="#0e1117",
+        height=640,
         margin={"r": 0, "t": 10, "l": 0, "b": 10},
         dragmode=False,
         legend=dict(
@@ -186,6 +187,7 @@ def create_raion_map(
     fig.update_layout(
         paper_bgcolor="#0e1117",
         plot_bgcolor="#0e1117",
+        height=640,
         margin={"r": 0, "t": 10, "l": 0, "b": 10},
         dragmode=False,
         legend=dict(

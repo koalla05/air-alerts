@@ -137,7 +137,7 @@ if enable_sim_override:
 st.title("Ukraine Air Raid Alerts: Duration & Expiration Predictor")
 
 now_kyiv = datetime.datetime.now(datetime.timezone.utc).astimezone(datetime.timezone(datetime.timedelta(hours=3)))
-col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+col_m1, col_m2, col_m3 = st.columns(3)
 
 with col_m1:
     st.metric(
@@ -156,11 +156,6 @@ with col_m3:
         label="Last Updated",
         value=now_kyiv.strftime("%H:%M:%S (Kyiv)"),
     )
-with col_m4:
-    st.metric(
-        label="Prediction Engine",
-        value="LightGBM Quantile",
-    )
 
 if not live_status["is_live_api"]:
     st.info("ℹ️ Running in **Demo Simulation Mode** (realistic snapshot). To connect to live production sirens, set `ALERTS_IN_UA_TOKEN`.", icon="📡")
@@ -171,7 +166,7 @@ col_map, col_forecast = st.columns([1.3, 1.0], gap="medium")
 with col_map:
     st.subheader("National Siren Map (by Raion)")
     map_fig = create_raion_map(live_status, selected_raion_id)
-    st.plotly_chart(map_fig, width='stretch')
+    st.plotly_chart(map_fig, width='stretch', config={"displayModeBar": False})
 
 with col_forecast:
     # Raion-level live status is the true, granular signal; predictions
@@ -221,7 +216,10 @@ with col_forecast:
 
         # Likelihood distribution curve
         st.markdown("#### Remaining Time Distribution")
-        chart_fig = create_remaining_time_curve(elapsed_min, median_rem, p10, p90)
+        chart_fig = create_remaining_time_curve(
+            elapsed_min, median_rem, p10, p90,
+            accent="#ef4444", accent_fill="rgba(239, 68, 68, 0.15)",
+        )
         st.plotly_chart(chart_fig, width='stretch')
 
     else:
@@ -250,14 +248,23 @@ with col_forecast:
         # Probability Forecast Bars
         render_probability_bars(pred["probabilities"], is_active=False)
 
+        # Likelihood distribution curve
+        st.markdown("#### Time to Next Alert Distribution")
+        chart_fig = create_remaining_time_curve(
+            elapsed_quiet_min, median_gap, p10, p90,
+            accent="#22c55e", accent_fill="rgba(34, 197, 94, 0.15)", unit="hours",
+        )
+        st.plotly_chart(chart_fig, width='stretch')
+
 
 # Footer with Safety Disclaimer
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #94a3b8; font-size: 12px; line-height: 1.6;">
-    ⚠️ <strong>Important Safety Disclaimer:</strong> This application is an experimental machine learning research project. 
-    Predictions are purely statistical estimations based on historical siren data (2022–2026) and <strong>must never be used for civil defense, shelter decisions, or personal safety</strong>. 
+    ⚠️ <strong>Important Safety Disclaimer:</strong> This application is an experimental machine learning research project.
+    Predictions are purely statistical estimations based on historical siren data (2022–2026) and <strong>must never be used for civil defense, shelter decisions, or personal safety</strong>.
     Always follow official notifications from the State Emergency Service of Ukraine and local civil defense authorities.<br/>
+    Prediction engine: LightGBM Quantile Regression &nbsp;·&nbsp;
     Historical Data: <a href="https://github.com/Vadimkin/ukrainian-air-raid-sirens-dataset" target="_blank" style="color: #38bdf8;">Ukrainian Air Raid Sirens Dataset (Vadimkin)</a>
 </div>
 """, unsafe_allow_html=True)
