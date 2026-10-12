@@ -16,10 +16,13 @@ from alertpred.config import (
 )
 from alertpred.models.quantile_lgbm import AlertPredictionPipeline
 from alertpred.ingestion.live import get_live_alerts_status, ISO_MAPPING
+from alertpred.ingestion.alerts_regions import OBLAST_UID
+from alertpred.ingestion.alerts_client import fetch_region_history, get_api_token
+from alertpred.ingestion.backfill import parse_oblast_episodes_from_payload
 from alertpred.app.map import create_raion_map
 from alertpred.app.components import render_probability_bars, create_remaining_time_curve
 from alertpred.app.stats import render_stats_tab
-from alertpred.geo.raions import RAIONS_BY_OBLAST, RAION_BY_ID
+from alertpred.geo.raions import RAIONS_BY_OBLAST, RAION_BY_ID, API_NAME_TO_RAION_ID
 
 
 # Set Streamlit Page Config
@@ -58,6 +61,62 @@ def load_last_alert_end_by_region():
 
 
 last_alert_end_by_region = load_last_alert_end_by_region()
+
+
+@st.cache_data(ttl=900)
+def fetch_fresh_quiet_status(region_id: str, raion_id: "str | None"):
+    """
+    Live "last known alert end" for the selected oblast and, if one is
+    selected, a specific raion within it - replacing the training-snapshot
+    fallback entirely rather than patching over it, and giving raions real
+    tracking for the first time (they previously always showed a flat 8h
+    placeholder, never real data).
+
+    `last_alert_end_by_region` (loaded from `data/processed/cleaned_alerts.parquet`)
+    is a training-time snapshot, only as fresh as the last `train.py` run,
+    and we've already hit real bugs that made it wrong - presenting a
+    specific-looking "quiet for X hours" sourced from it is false precision
+    dressed up as fact. alerts.in.ua's history endpoint only looks back
+    ~30 days, so it can't replace the snapshot's *depth*, but within that
+    window it's live and verified, so it's preferred whenever available.
+    When the live window comes back with nothing, that's still real
+    information - "no alert in at least 30 days" - just reported honestly
+    as a lower bound instead of silently substituting a snapshot value of
+    unknown age.
+
+    Returns (oblast_last_end, oblast_is_lower_bound, raion_last_end, raion_is_lower_bound).
+    A `None` end (only possible when there's no token / the call fails)
+    means "no live data at all" - the caller falls back to the training
+    snapshot in that case, same as before.
+    """
+    uid = OBLAST_UID.get(region_id)
+    if uid is None or not get_api_token():
+        return None, False, None, False
+    try:
+        payload = fetch_region_history(uid, cache_ttl_sec=900)
+    except Exception:
+        return None, False, None, False
+
+    alert_objs = payload.get("alerts", [])
+    thirty_days_ago = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=30)
+
+    oblast_episodes = parse_oblast_episodes_from_payload(alert_objs, region_id)
+    oblast_ends = [ep["finished_at"] for ep in oblast_episodes]
+    oblast_end = max(oblast_ends) if oblast_ends else thirty_days_ago
+    oblast_is_lower_bound = not oblast_ends
+
+    raion_end, raion_is_lower_bound = None, False
+    if raion_id is not None:
+        raion_ends = [
+            pd.to_datetime(a["finished_at"], utc=True)
+            for a in alert_objs
+            if a.get("location_type") == "raion" and a.get("finished_at")
+            and API_NAME_TO_RAION_ID.get(a.get("location_title")) == raion_id
+        ]
+        raion_end = max(raion_ends) if raion_ends else thirty_days_ago
+        raion_is_lower_bound = not raion_ends
+
+    return oblast_end, oblast_is_lower_bound, raion_end, raion_is_lower_bound
 
 
 @st.cache_data(ttl=600)
@@ -126,8 +185,31 @@ else:
     sim_elapsed = 0.0
     sim_quiet = 0.0
 
+# Prefer live data over the training-time snapshot for the selected
+# oblast (and raion, if one is selected) - see fetch_fresh_quiet_status's
+# docstring for why a stale fallback isn't good enough on its own.
+oblast_end, oblast_is_lower_bound, raion_end, raion_is_lower_bound = fetch_fresh_quiet_status(
+    selected_region_id, selected_raion_id
+)
+if oblast_end is not None:
+    last_alert_end_by_region = {**last_alert_end_by_region, selected_region_id: oblast_end}
+
 # Fetch Live Status
 live_status = get_live_alerts_status(last_alert_end_by_region=last_alert_end_by_region)
+
+# Raion quiet-time has no equivalent input into get_live_alerts_status
+# (it always used a flat 480min placeholder for raions - see the chat
+# discussion), so it's set directly here from the live fetch above.
+if (
+    selected_raion_id is not None
+    and raion_end is not None
+    and selected_raion_id in live_status["raions"]
+    and not live_status["raions"][selected_raion_id]["is_active"]
+):
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    live_status["raions"][selected_raion_id]["elapsed_quiet_min"] = max(
+        0.0, (now_utc - raion_end).total_seconds() / 60.0
+    )
 
 # Apply simulation override if active (to the raion if one is selected, else the whole oblast)
 if enable_sim_override:
@@ -188,13 +270,17 @@ with tab_live:
         if selected_raion_id is not None:
             region_state = live_status["raions"].get(selected_raion_id, {"is_active": False, "elapsed_min": 0, "elapsed_quiet_min": 480})
             display_name = f"{selected_raion_label.split(' (')[0]} ({selected_meta['en']})"
+            quiet_is_lower_bound = raion_is_lower_bound and raion_end is not None
         else:
             region_state = live_status["regions"].get(selected_region_id, {"is_active": False, "elapsed_min": 0, "elapsed_quiet_min": 240})
             display_name = selected_meta["en"]
+            quiet_is_lower_bound = oblast_is_lower_bound and oblast_end is not None
 
         is_active = region_state["is_active"]
         elapsed_min = region_state["elapsed_min"]
         elapsed_quiet_min = region_state["elapsed_quiet_min"]
+        if enable_sim_override:
+            quiet_is_lower_bound = False  # an explicit simulated value is exact by definition
 
         st.subheader(display_name)
         if selected_raion_id is not None:
@@ -237,7 +323,10 @@ with tab_live:
 
         else:
             quiet_hours = elapsed_quiet_min / 60.0
-            st.success(f"✅ **NO ACTIVE ALERT** · Quiet for **{quiet_hours:.1f} hours**")
+            bound_suffix = "+" if quiet_is_lower_bound else ""
+            st.success(f"✅ **NO ACTIVE ALERT** · Quiet for **{quiet_hours:.1f}{bound_suffix} hours**")
+            if quiet_is_lower_bound:
+                st.caption("No alert found in alerts.in.ua's ~30-day history window - this is a lower bound, not an exact time.")
 
             # Inference for Quiet Period
             pred = pipeline.predict_quiet_region(selected_region_id, elapsed_quiet_min=elapsed_quiet_min, live_status=live_status)

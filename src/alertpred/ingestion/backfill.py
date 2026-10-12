@@ -68,12 +68,21 @@ def _parse_alert_objects(alert_objs: List[dict], region_id: str) -> List[dict]:
     return rows
 
 
+def parse_oblast_episodes_from_payload(alert_objs: List[dict], region_id: str) -> List[dict]:
+    """Public wrapper around `_parse_alert_objects`, for callers (e.g. the
+    app's live-freshness check) that already hold a raw history payload
+    (from `fetch_region_history`) and want the same oblast-level rollup
+    `fetch_all_region_histories` produces, without re-fetching."""
+    return _parse_alert_objects(alert_objs, region_id)
+
+
 def fetch_all_region_histories(
     period: str = "month_ago",
     regions: Optional[Dict[str, int]] = None,
     token: Optional[str] = None,
     verbose: bool = True,
     max_duration_hours: float = 72.0,
+    cache_ttl_sec: Optional[float] = None,
 ) -> pd.DataFrame:
     """
     Fetch alert history for every oblast via alerts.in.ua and return a
@@ -92,15 +101,21 @@ def fetch_all_region_histories(
     between them can otherwise get chained by the interval merge into one
     absurd multi-week "episode" instead of being recognized as sustained
     high activity.
+
+    `cache_ttl_sec`, if given, overrides `fetch_region_history`'s own
+    default (2h) - e.g. the app uses a short TTL when freshening a single
+    region's "last known alert end" for interactive display, since that
+    default is tuned for bulk/training use where latency doesn't matter.
     """
     regions = regions or OBLAST_UID
     all_rows: List[dict] = []
     errors: Dict[str, str] = {}
     max_duration_min = max_duration_hours * 60.0
+    history_kwargs = {"cache_ttl_sec": cache_ttl_sec} if cache_ttl_sec is not None else {}
 
     for i, (region_id, uid) in enumerate(regions.items(), start=1):
         try:
-            payload = fetch_region_history(uid, period=period, token=token)
+            payload = fetch_region_history(uid, period=period, token=token, **history_kwargs)
         except AlertsApiError as e:
             errors[region_id] = str(e)
             if verbose:
