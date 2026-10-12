@@ -4,6 +4,7 @@ import pytest
 
 from alertpred.features.builder import (
     compute_recency_weight,
+    compute_time_bucket_features,
     sample_as_of_alert_moments,
     sample_as_of_gap_moments,
 )
@@ -11,6 +12,45 @@ from alertpred.features.builder import (
 
 def _ts(s: str) -> pd.Timestamp:
     return pd.Timestamp(s, tz="UTC")
+
+
+class TestComputeTimeBucketFeatures:
+    def test_bucket_is_based_on_kyiv_local_time_not_utc(self):
+        # Arrange: 03:00 UTC is 05:00 in Kyiv during winter (UTC+2) - still
+        # "night" locally, even though a UTC-only bucket would also say
+        # night here (pick a boundary case where UTC and local disagree)
+        as_of = pd.Series([_ts("2026-01-01 10:00:00")])  # 12:00 Kyiv local -> afternoon
+
+        # Act
+        result = compute_time_bucket_features(as_of)
+
+        # Assert: a naive UTC bucket would call 10:00 UTC "morning"; the
+        # correct Kyiv-local bucket is "afternoon"
+        assert result.loc[0, "time_of_day"] == "afternoon"
+
+    def test_each_boundary_hour_falls_into_the_expected_bucket(self):
+        # Arrange: local midnight, local noon, local 18:00 (winter, UTC+2)
+        as_of = pd.Series([
+            _ts("2025-12-31 22:00:00"),  # 00:00 Kyiv -> night
+            _ts("2026-01-01 10:00:00"),  # 12:00 Kyiv -> afternoon
+            _ts("2026-01-01 16:00:00"),  # 18:00 Kyiv -> evening
+        ])
+
+        # Act
+        result = compute_time_bucket_features(as_of)
+
+        # Assert
+        assert list(result["time_of_day"]) == ["night", "afternoon", "evening"]
+
+    def test_day_of_week_matches_the_local_calendar_day(self):
+        # Arrange: a known Monday in Kyiv local time
+        as_of = pd.Series([_ts("2026-01-05 03:00:00")])
+
+        # Act
+        result = compute_time_bucket_features(as_of)
+
+        # Assert
+        assert result.loc[0, "day_of_week"] == "Monday"
 
 
 class TestComputeRecencyWeight:

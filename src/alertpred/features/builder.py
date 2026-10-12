@@ -45,6 +45,39 @@ def compute_cyclical_time_features(timestamps: pd.Series) -> pd.DataFrame:
     return features
 
 
+_TIME_OF_DAY_BINS = [-1, 5, 11, 17, 23]
+_TIME_OF_DAY_LABELS = ["night", "morning", "afternoon", "evening"]
+
+
+def compute_time_bucket_features(
+    timestamps: pd.Series,
+    local_tz: str = "Europe/Kyiv",
+) -> pd.DataFrame:
+    """
+    Explicit categorical time-of-day (night/morning/afternoon/evening, each
+    a 6h block) and day-of-week, as LightGBM categoricals rather than the
+    smooth hour_sin/cos + dow_sin/cos encoding `compute_cyclical_time_features`
+    already provides. A tree model *can* approximate a block boundary from
+    the cyclical features, but only by combining several splits across both
+    the sin and cos dimensions at once; an explicit bucket makes it a single
+    split - see notebooks/04_time_of_day_features.ipynb for whether that
+    actually helps.
+
+    Computed on `local_tz` (default Kyiv), not UTC: a UTC-hour bucket would
+    be shifted 2-3h off real local day/night depending on DST, which is
+    exactly the kind of real-world pattern (e.g. overnight activity) this
+    feature is meant to capture - same convention notebook 01's diurnal EDA
+    already uses (`tz_convert('Europe/Kyiv')`).
+    """
+    local_dt = pd.to_datetime(timestamps, utc=True).dt.tz_convert(local_tz)
+    features = pd.DataFrame(index=timestamps.index)
+    features["time_of_day"] = pd.cut(
+        local_dt.dt.hour, bins=_TIME_OF_DAY_BINS, labels=_TIME_OF_DAY_LABELS
+    ).astype(str)
+    features["day_of_week"] = local_dt.dt.day_name()
+    return features
+
+
 def sample_as_of_alert_moments(
     df_alerts: pd.DataFrame,
     elapsed_steps: Optional[List[int]] = None,
