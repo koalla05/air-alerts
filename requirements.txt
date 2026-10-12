@@ -13,3 +13,4 @@ nbconvert>=7.0.0
 streamlit>=1.30.0
 plotly>=5.18.0
 python-dotenv>=1.0.0
+pytest>=7.4.0
