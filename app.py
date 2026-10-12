@@ -18,6 +18,7 @@ from alertpred.models.quantile_lgbm import AlertPredictionPipeline
 from alertpred.ingestion.live import get_live_alerts_status, ISO_MAPPING
 from alertpred.app.map import create_raion_map
 from alertpred.app.components import render_probability_bars, create_remaining_time_curve
+from alertpred.app.stats import render_stats_tab
 from alertpred.geo.raions import RAIONS_BY_OBLAST, RAION_BY_ID
 
 
@@ -57,6 +58,15 @@ def load_last_alert_end_by_region():
 
 
 last_alert_end_by_region = load_last_alert_end_by_region()
+
+
+@st.cache_data(ttl=600)
+def load_alerts_df():
+    """Full processed episode table, for the Statistics tab."""
+    path = PROCESSED_DATA_DIR / "cleaned_alerts.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_parquet(path)
 
 
 # Sidebar: Region Selection & Simulation Controls
@@ -136,126 +146,132 @@ if enable_sim_override:
 # Header National Overview
 st.title("Ukraine Air Raid Alerts: Duration & Expiration Predictor")
 
-now_kyiv = datetime.datetime.now(datetime.timezone.utc).astimezone(datetime.timezone(datetime.timedelta(hours=3)))
-col_m1, col_m2, col_m3 = st.columns(3)
+tab_live, tab_stats = st.tabs(["🚨 Live Dashboard", "📊 Statistics"])
 
-with col_m1:
-    st.metric(
-        label="Active Alerts",
-        value=f"{live_status['total_active_regions']} / {len(live_status['regions'])} Oblasts",
-        delta="Elevated Activity" if live_status["total_active_regions"] > 4 else "Calm",
-        delta_color="inverse",
-    )
-with col_m2:
-    st.metric(
-        label="Status Mode",
-        value="Live API" if live_status["is_live_api"] else "Demo Simulation",
-    )
-with col_m3:
-    st.metric(
-        label="Last Updated",
-        value=now_kyiv.strftime("%H:%M:%S (Kyiv)"),
-    )
+with tab_live:
+    now_kyiv = datetime.datetime.now(datetime.timezone.utc).astimezone(datetime.timezone(datetime.timedelta(hours=3)))
+    col_m1, col_m2, col_m3 = st.columns(3)
 
-if not live_status["is_live_api"]:
-    st.info("ℹ️ Running in **Demo Simulation Mode** (realistic snapshot). To connect to live production sirens, set `ALERTS_IN_UA_TOKEN`.", icon="📡")
-
-# Main Content Layout: Map on the Left (60%), Forecast Panel on the Right (40%)
-col_map, col_forecast = st.columns([1.3, 1.0], gap="medium")
-
-with col_map:
-    st.subheader("National Siren Map (by Raion)")
-    map_fig = create_raion_map(live_status, selected_raion_id)
-    st.plotly_chart(map_fig, width='stretch', config={"displayModeBar": False})
-
-with col_forecast:
-    # Raion-level live status is the true, granular signal; predictions
-    # still come from the parent oblast's trained model (see sidebar
-    # caption) until raion-level training is built (tracked as future work).
-    if selected_raion_id is not None:
-        region_state = live_status["raions"].get(selected_raion_id, {"is_active": False, "elapsed_min": 0, "elapsed_quiet_min": 480})
-        display_name = f"{selected_raion_label.split(' (')[0]} ({selected_meta['en']})"
-    else:
-        region_state = live_status["regions"].get(selected_region_id, {"is_active": False, "elapsed_min": 0, "elapsed_quiet_min": 240})
-        display_name = selected_meta["en"]
-
-    is_active = region_state["is_active"]
-    elapsed_min = region_state["elapsed_min"]
-    elapsed_quiet_min = region_state["elapsed_quiet_min"]
-
-    st.subheader(display_name)
-    if selected_raion_id is not None:
-        st.caption(f"Prediction model: {selected_meta['en']} (oblast-level - no raion-level model yet)")
-
-    if is_active:
-        st.error(f"🚨 **ACTIVE AIR RAID ALERT** · Running for **{int(elapsed_min)} minutes**")
-
-        # Inference for Active Alert
-        pred = pipeline.predict_active_alert(selected_region_id, elapsed_min=elapsed_min, live_status=live_status)
-        median_rem = pred["predicted_remaining_median_min"]
-        p10, p90 = pred["predicted_range_p10_p90_min"]
-
-        # Estimated clock time of alert end in Kyiv time
-        est_end_dt = now_kyiv + datetime.timedelta(minutes=median_rem)
-
-        # Primary Metrics Card
-        st.markdown(f"""
-        <div style="background-color: #1e242d; padding: 18px; border-radius: 8px; border-left: 5px solid #ef4444; margin-bottom: 15px;">
-            <div style="color: #94a3b8; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;">Predicted Remaining Duration</div>
-            <div style="font-size: 28px; font-weight: 700; color: #f8fafc; margin-top: 4px;">
-                ~{median_rem:.0f} min <span style="font-size: 16px; font-weight: 400; color: #94a3b8;">(est. end at {est_end_dt.strftime('%H:%M')})</span>
-            </div>
-            <div style="color: #cbd5e1; font-size: 13px; margin-top: 6px;">
-                Likely interval (P10–P90): <strong>{p10:.0f} – {p90:.0f} minutes</strong>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # Probability Forecast Bars
-        render_probability_bars(pred["probabilities"], is_active=True)
-
-        # Likelihood distribution curve
-        st.markdown("#### Remaining Time Distribution")
-        chart_fig = create_remaining_time_curve(
-            elapsed_min, median_rem, p10, p90,
-            accent="#ef4444", accent_fill="rgba(239, 68, 68, 0.15)",
+    with col_m1:
+        st.metric(
+            label="Active Alerts",
+            value=f"{live_status['total_active_regions']} / {len(live_status['regions'])} Oblasts",
+            delta="Elevated Activity" if live_status["total_active_regions"] > 4 else "Calm",
+            delta_color="inverse",
         )
-        st.plotly_chart(chart_fig, width='stretch')
-
-    else:
-        quiet_hours = elapsed_quiet_min / 60.0
-        st.success(f"✅ **NO ACTIVE ALERT** · Quiet for **{quiet_hours:.1f} hours**")
-
-        # Inference for Quiet Period
-        pred = pipeline.predict_quiet_region(selected_region_id, elapsed_quiet_min=elapsed_quiet_min, live_status=live_status)
-        median_gap = pred["predicted_next_alert_gap_median_min"]
-        p10, p90 = pred["predicted_range_p10_p90_min"]
-
-        est_next_dt = now_kyiv + datetime.timedelta(minutes=median_gap)
-
-        st.markdown(f"""
-        <div style="background-color: #1e242d; padding: 18px; border-radius: 8px; border-left: 5px solid #22c55e; margin-bottom: 15px;">
-            <div style="color: #94a3b8; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;">Predicted Time to Next Siren</div>
-            <div style="font-size: 28px; font-weight: 700; color: #f8fafc; margin-top: 4px;">
-                ~{median_gap/60.0:.1f} hours <span style="font-size: 16px; font-weight: 400; color: #94a3b8;">({median_gap:.0f} min)</span>
-            </div>
-            <div style="color: #cbd5e1; font-size: 13px; margin-top: 6px;">
-                Uncertainty range (P10–P90): <strong>{p10/60.0:.1f} – {p90/60.0:.1f} hours</strong>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # Probability Forecast Bars
-        render_probability_bars(pred["probabilities"], is_active=False)
-
-        # Likelihood distribution curve
-        st.markdown("#### Time to Next Alert Distribution")
-        chart_fig = create_remaining_time_curve(
-            elapsed_quiet_min, median_gap, p10, p90,
-            accent="#22c55e", accent_fill="rgba(34, 197, 94, 0.15)", unit="hours",
+    with col_m2:
+        st.metric(
+            label="Status Mode",
+            value="Live API" if live_status["is_live_api"] else "Demo Simulation",
         )
-        st.plotly_chart(chart_fig, width='stretch')
+    with col_m3:
+        st.metric(
+            label="Last Updated",
+            value=now_kyiv.strftime("%H:%M:%S (Kyiv)"),
+        )
 
+    if not live_status["is_live_api"]:
+        st.info("ℹ️ Running in **Demo Simulation Mode** (realistic snapshot). To connect to live production sirens, set `ALERTS_IN_UA_TOKEN`.", icon="📡")
+
+    # Main Content Layout: Map on the Left (60%), Forecast Panel on the Right (40%)
+    col_map, col_forecast = st.columns([1.3, 1.0], gap="medium")
+
+    with col_map:
+        st.subheader("National Siren Map (by Raion)")
+        map_fig = create_raion_map(live_status, selected_raion_id)
+        st.plotly_chart(map_fig, width='stretch', config={"displayModeBar": False})
+
+    with col_forecast:
+        # Raion-level live status is the true, granular signal; predictions
+        # still come from the parent oblast's trained model (see sidebar
+        # caption) until raion-level training is built (tracked as future work).
+        if selected_raion_id is not None:
+            region_state = live_status["raions"].get(selected_raion_id, {"is_active": False, "elapsed_min": 0, "elapsed_quiet_min": 480})
+            display_name = f"{selected_raion_label.split(' (')[0]} ({selected_meta['en']})"
+        else:
+            region_state = live_status["regions"].get(selected_region_id, {"is_active": False, "elapsed_min": 0, "elapsed_quiet_min": 240})
+            display_name = selected_meta["en"]
+
+        is_active = region_state["is_active"]
+        elapsed_min = region_state["elapsed_min"]
+        elapsed_quiet_min = region_state["elapsed_quiet_min"]
+
+        st.subheader(display_name)
+        if selected_raion_id is not None:
+            st.caption(f"Prediction model: {selected_meta['en']} (oblast-level - no raion-level model yet)")
+
+        if is_active:
+            st.error(f"🚨 **ACTIVE AIR RAID ALERT** · Running for **{int(elapsed_min)} minutes**")
+
+            # Inference for Active Alert
+            pred = pipeline.predict_active_alert(selected_region_id, elapsed_min=elapsed_min, live_status=live_status)
+            median_rem = pred["predicted_remaining_median_min"]
+            p10, p90 = pred["predicted_range_p10_p90_min"]
+
+            # Estimated clock time of alert end in Kyiv time
+            est_end_dt = now_kyiv + datetime.timedelta(minutes=median_rem)
+
+            # Primary Metrics Card
+            st.markdown(f"""
+            <div style="background-color: #1e242d; padding: 18px; border-radius: 8px; border-left: 5px solid #ef4444; margin-bottom: 15px;">
+                <div style="color: #94a3b8; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;">Predicted Remaining Duration</div>
+                <div style="font-size: 28px; font-weight: 700; color: #f8fafc; margin-top: 4px;">
+                    ~{median_rem:.0f} min <span style="font-size: 16px; font-weight: 400; color: #94a3b8;">(est. end at {est_end_dt.strftime('%H:%M')})</span>
+                </div>
+                <div style="color: #cbd5e1; font-size: 13px; margin-top: 6px;">
+                    Likely interval (P10–P90): <strong>{p10:.0f} – {p90:.0f} minutes</strong>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Probability Forecast Bars
+            render_probability_bars(pred["probabilities"], is_active=True)
+
+            # Likelihood distribution curve
+            st.markdown("#### Remaining Time Distribution")
+            chart_fig = create_remaining_time_curve(
+                elapsed_min, median_rem, p10, p90,
+                accent="#ef4444", accent_fill="rgba(239, 68, 68, 0.15)",
+            )
+            st.plotly_chart(chart_fig, width='stretch')
+
+        else:
+            quiet_hours = elapsed_quiet_min / 60.0
+            st.success(f"✅ **NO ACTIVE ALERT** · Quiet for **{quiet_hours:.1f} hours**")
+
+            # Inference for Quiet Period
+            pred = pipeline.predict_quiet_region(selected_region_id, elapsed_quiet_min=elapsed_quiet_min, live_status=live_status)
+            median_gap = pred["predicted_next_alert_gap_median_min"]
+            p10, p90 = pred["predicted_range_p10_p90_min"]
+
+            est_next_dt = now_kyiv + datetime.timedelta(minutes=median_gap)
+
+            st.markdown(f"""
+            <div style="background-color: #1e242d; padding: 18px; border-radius: 8px; border-left: 5px solid #22c55e; margin-bottom: 15px;">
+                <div style="color: #94a3b8; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;">Predicted Time to Next Siren</div>
+                <div style="font-size: 28px; font-weight: 700; color: #f8fafc; margin-top: 4px;">
+                    ~{median_gap/60.0:.1f} hours <span style="font-size: 16px; font-weight: 400; color: #94a3b8;">({median_gap:.0f} min)</span>
+                </div>
+                <div style="color: #cbd5e1; font-size: 13px; margin-top: 6px;">
+                    Uncertainty range (P10–P90): <strong>{p10/60.0:.1f} – {p90/60.0:.1f} hours</strong>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Probability Forecast Bars
+            render_probability_bars(pred["probabilities"], is_active=False)
+
+            # Likelihood distribution curve
+            st.markdown("#### Time to Next Alert Distribution")
+            chart_fig = create_remaining_time_curve(
+                elapsed_quiet_min, median_gap, p10, p90,
+                accent="#22c55e", accent_fill="rgba(34, 197, 94, 0.15)", unit="hours",
+            )
+            st.plotly_chart(chart_fig, width='stretch')
+
+with tab_stats:
+    df_alerts_full = load_alerts_df()
+    render_stats_tab(df_alerts_full, REGION_MAPPING)
 
 # Footer with Safety Disclaimer
 st.markdown("---")

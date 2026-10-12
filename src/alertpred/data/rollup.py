@@ -17,7 +17,10 @@ from typing import Any, Dict, List
 import pandas as pd
 
 
-def merge_intervals_to_episodes(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def merge_intervals_to_episodes(
+    records: List[Dict[str, Any]],
+    max_single_record_hours: float = 24.0,
+) -> List[Dict[str, Any]]:
     """
     Merge overlapping/touching (started_at, finished_at) intervals for a
     single region into oblast-level episodes.
@@ -27,11 +30,30 @@ def merge_intervals_to_episodes(records: List[Dict[str, Any]]) -> List[Dict[str,
     still-open (finished_at is NaT/None) records already excluded by the
     caller (a currently active alert isn't a completed historical episode).
 
+    One corrupt record with an absurd duration (seen in practice: a
+    hromada-level row the source never closed out, spanning *months*) would
+    otherwise chain-merge everything between its start and end into one
+    giant episode - silently destroying up to years of otherwise-valid data
+    for that stretch, since the only other safety net is an upper bound on
+    the *merged output*, by which point the damage is already done. So
+    `max_single_record_hours` drops individual input records this long
+    *before* merging - a real single siren essentially never runs unbroken
+    that long (even the longest genuine merged episode seen in this data,
+    built from many real back-to-back sub-oblast alerts, is ~43h).
+
     Returns episodes as {"started_at", "finished_at", "duration_min",
     "is_rollup"} sorted by start. `is_rollup` is True if the merged episode
     includes at least one sub-oblast (raion/hromada/city) record - i.e. it
     is a derived signal, not a native oblast-wide alert.
     """
+    if not records:
+        return []
+
+    max_single_record_min = max_single_record_hours * 60.0
+    records = [
+        r for r in records
+        if (r["finished_at"] - r["started_at"]).total_seconds() / 60.0 <= max_single_record_min
+    ]
     if not records:
         return []
 
@@ -61,11 +83,14 @@ def build_rollup_episodes_df(
     source_col: str = "source",
     min_duration_sec: int = 60,
     max_duration_hours: int = 72,
+    max_single_record_hours: float = 24.0,
 ) -> pd.DataFrame:
     """
     Group already-parsed, already-region-mapped alert rows (any granularity)
     by region and merge them into oblast-level episodes via
-    `merge_intervals_to_episodes`.
+    `merge_intervals_to_episodes` (see that function for why
+    `max_single_record_hours` matters - it guards against one corrupt
+    never-closed row silently swallowing a huge stretch of real data).
 
     Expects `df` to already have UTC `started_at`/`finished_at` (no nulls -
     still-open/censored rows must be dropped by the caller first), plus
@@ -78,7 +103,7 @@ def build_rollup_episodes_df(
             {"started_at": r.started_at, "finished_at": r.finished_at, "is_native_oblast": r.is_native_oblast}
             for r in group.itertuples()
         ]
-        episodes = merge_intervals_to_episodes(records)
+        episodes = merge_intervals_to_episodes(records, max_single_record_hours=max_single_record_hours)
         oblast_name = group[oblast_col].iloc[0]
         region_en = group[region_en_col].iloc[0]
         sources = sorted(group[source_col].unique())

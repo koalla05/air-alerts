@@ -621,6 +621,22 @@ print(f"Task A (Alert Duration) Snapshots -> Train: {len(train_a_samples):,}, Te
 print(f"Task B (Quiet Gaps) Snapshots     -> Train: {len(train_b_samples):,}, Test: {len(test_b_samples):,}")
 display(train_a_samples.head())""")
 
+    add_md("""### 6.1 Neighbor-Region Context (notebooks/03_neighbor_features.ipynb)
+`AlertPredictionPipeline`'s quantile models also take point-in-time
+neighbor-activity features (see that notebook for the comparison that
+justified adding them): for each as-of moment, how many of a region's
+direct neighbors - and how many regions nationally - were active at that
+exact historical moment, via a leakage-safe backward as-of join.""")
+
+    add_code("""from alertpred.config import OBLAST_NEIGHBORS
+from alertpred.features.builder import compute_neighbor_active_features
+
+train_a_samples = compute_neighbor_active_features(train_a_samples, df_alerts, OBLAST_NEIGHBORS)
+test_a_samples = compute_neighbor_active_features(test_a_samples, df_alerts, OBLAST_NEIGHBORS)
+train_b_samples = compute_neighbor_active_features(train_b_samples, df_alerts, OBLAST_NEIGHBORS)
+test_b_samples = compute_neighbor_active_features(test_b_samples, df_alerts, OBLAST_NEIGHBORS)
+print("Neighbor context features attached.")""")
+
     # Section 7: LightGBM Model Training
     add_md("""## 7. Machine Learning Models: LightGBM Quantile & Probability
 We train:
