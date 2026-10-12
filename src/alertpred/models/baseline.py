@@ -4,6 +4,24 @@ from typing import Dict, List, Optional, Tuple, Any
 from lifelines import KaplanMeierFitter
 
 
+def weighted_percentile(values: np.ndarray, weights: np.ndarray, percentile: float) -> float:
+    """Weighted quantile via linear interpolation on the weighted CDF (Hazen's method).
+    Degenerates to `np.percentile` when all weights are equal."""
+    if len(values) == 0:
+        return 0.0
+    order = np.argsort(values)
+    v, w = values[order], weights[order]
+    cum_w = np.cumsum(w) - 0.5 * w
+    cum_w /= np.sum(w)
+    return float(np.interp(percentile / 100.0, cum_w, v))
+
+
+def weighted_mean(values: np.ndarray, weights: np.ndarray) -> float:
+    if len(values) == 0 or np.sum(weights) == 0:
+        return 0.0
+    return float(np.average(values, weights=weights))
+
+
 class EmpiricalConditionalBaseline:
     """
     Non-parametric conditional empirical baseline (PLAN.md Section 5.1).
@@ -12,18 +30,35 @@ class EmpiricalConditionalBaseline:
       - Remaining time distribution: Y_rem = D - t.
       - Produces P10, P50 (median), P90 and P(ends within 15/30/60 min).
       - Gracefully falls back to global (national) empirical distribution if region sample is small.
+
+    Optionally takes a `weight_col` (e.g. a recency weight) at fit time, so
+    samples contribute unequally to the weighted percentiles/probabilities -
+    see notebook 02 for a regime-shift comparison of this against training
+    on a hard-cutoff recent-only window.
     """
 
     def __init__(self, min_samples: int = 10):
         self.min_samples = min_samples
         self.region_durations: Dict[str, np.ndarray] = {}
+        self.region_weights: Dict[str, np.ndarray] = {}
         self.global_durations: np.ndarray = np.array([])
+        self.global_weights: np.ndarray = np.array([])
 
-    def fit(self, df_alerts: pd.DataFrame, duration_col: str = "duration_min") -> "EmpiricalConditionalBaseline":
-        self.global_durations = df_alerts[duration_col].dropna().values
+    def fit(
+        self,
+        df_alerts: pd.DataFrame,
+        duration_col: str = "duration_min",
+        weight_col: Optional[str] = None,
+    ) -> "EmpiricalConditionalBaseline":
+        valid = df_alerts.dropna(subset=[duration_col])
+        self.global_durations = valid[duration_col].values
+        self.global_weights = valid[weight_col].values if weight_col else np.ones(len(valid))
+
         self.region_durations = {}
-        for region_id, group in df_alerts.groupby("region_id"):
-            self.region_durations[region_id] = group[duration_col].dropna().values
+        self.region_weights = {}
+        for region_id, group in valid.groupby("region_id"):
+            self.region_durations[region_id] = group[duration_col].values
+            self.region_weights[region_id] = group[weight_col].values if weight_col else np.ones(len(group))
         return self
 
     def predict_remaining(
@@ -36,12 +71,14 @@ class EmpiricalConditionalBaseline:
             horizons_min = [15, 30, 60]
 
         durations = self.region_durations.get(region_id, self.global_durations)
-        # Filter alerts that lasted longer than elapsed_min
-        surviving = durations[durations > elapsed_min]
+        weights = self.region_weights.get(region_id, self.global_weights)
+        mask = durations > elapsed_min
+        surviving, surviving_w = durations[mask], weights[mask]
 
         if len(surviving) < self.min_samples:
             # Fallback to national
-            surviving = self.global_durations[self.global_durations > elapsed_min]
+            mask_g = self.global_durations > elapsed_min
+            surviving, surviving_w = self.global_durations[mask_g], self.global_weights[mask_g]
 
         if len(surviving) == 0:
             # If elapsed_min exceeds all historical alerts, return default conservative estimate
@@ -55,13 +92,13 @@ class EmpiricalConditionalBaseline:
 
         remaining = surviving - elapsed_min
 
-        p10 = float(np.percentile(remaining, 10))
-        p50 = float(np.percentile(remaining, 50))
-        p90 = float(np.percentile(remaining, 90))
+        p10 = weighted_percentile(remaining, surviving_w, 10)
+        p50 = weighted_percentile(remaining, surviving_w, 50)
+        p90 = weighted_percentile(remaining, surviving_w, 90)
 
         probs = {}
         for h in horizons_min:
-            probs[f"within_{h}m"] = float(np.mean(remaining <= h))
+            probs[f"within_{h}m"] = weighted_mean((remaining <= h).astype(float), surviving_w)
 
         return {
             "p10": p10,
@@ -109,14 +146,22 @@ class KaplanMeierBaseline:
         self.kmfs: Dict[str, KaplanMeierFitter] = {}
         self.global_kmf: Optional[KaplanMeierFitter] = None
 
-    def fit(self, df_alerts: pd.DataFrame, duration_col: str = "duration_min") -> "KaplanMeierBaseline":
+    def fit(
+        self,
+        df_alerts: pd.DataFrame,
+        duration_col: str = "duration_min",
+        weight_col: Optional[str] = None,
+    ) -> "KaplanMeierBaseline":
+        weights = df_alerts[weight_col].values if weight_col else None
+
         self.global_kmf = KaplanMeierFitter()
-        self.global_kmf.fit(df_alerts[duration_col], event_observed=np.ones(len(df_alerts)))
+        self.global_kmf.fit(df_alerts[duration_col], event_observed=np.ones(len(df_alerts)), weights=weights)
 
         self.kmfs = {}
         for region_id, group in df_alerts.groupby("region_id"):
             kmf = KaplanMeierFitter()
-            kmf.fit(group[duration_col], event_observed=np.ones(len(group)))
+            group_weights = group[weight_col].values if weight_col else None
+            kmf.fit(group[duration_col], event_observed=np.ones(len(group)), weights=group_weights)
             self.kmfs[region_id] = kmf
         return self
 

@@ -31,6 +31,8 @@ RAION_NAME_ALIASES: Dict[str, str] = {
     "Шептицький район": "Червоноградський район",           # Lviv oblast, renamed Sep 2024
 }
 
+_OLD_TO_CURRENT_NAME: Dict[str, str] = {old: current for current, old in RAION_NAME_ALIASES.items()}
+
 _ISO_TO_REGION = {iso: region_id for region_id, iso in ISO_MAPPING.items()}
 _REGION_ID_TO_EN = {meta["id"]: meta["en"] for meta in REGION_MAPPING.values()}
 
@@ -146,7 +148,11 @@ def _build_registry() -> List[Dict[str, Any]]:
     registry = []
 
     for feat in raion_geojson["features"]:
-        name_uk = feat["properties"]["rayon"]
+        # Display the current (post-decommunization-rename) name where it
+        # differs from this geojson's name, so the UI matches what
+        # alerts.in.ua and the public currently call the raion.
+        raw_name_uk = feat["properties"]["rayon"]
+        name_uk = _OLD_TO_CURRENT_NAME.get(raw_name_uk, raw_name_uk)
         ring = _largest_ring(feat["geometry"])
         centroid = _polygon_centroid(ring)
         oblast_id = _assign_oblast(centroid, oblast_paths)
@@ -193,15 +199,16 @@ def _build_registry() -> List[Dict[str, Any]]:
 RAION_REGISTRY: List[Dict[str, Any]] = _build_registry()
 RAION_BY_ID: Dict[str, Dict[str, Any]] = {r["raion_id"]: r for r in RAION_REGISTRY}
 
-# alerts.in.ua `location_title` -> our raion_id (covers both current and
-# pre-rename names, since RAION_NAME_ALIASES maps current -> geojson name).
+# alerts.in.ua `location_title` -> our raion_id. registry name_uk is already
+# the current name, so this covers current names directly; also map the old
+# (pre-rename) names from RAION_NAME_ALIASES for robustness.
 API_NAME_TO_RAION_ID: Dict[str, str] = {}
 for _r in RAION_REGISTRY:
     API_NAME_TO_RAION_ID[_r["name_uk"]] = _r["raion_id"]
-for _api_name, _geojson_name in RAION_NAME_ALIASES.items():
-    _target = next((r["raion_id"] for r in RAION_REGISTRY if r["name_uk"] == _geojson_name), None)
+for _current_name, _old_name in RAION_NAME_ALIASES.items():
+    _target = API_NAME_TO_RAION_ID.get(_current_name)
     if _target:
-        API_NAME_TO_RAION_ID[_api_name] = _target
+        API_NAME_TO_RAION_ID[_old_name] = _target
 
 RAIONS_BY_OBLAST: Dict[str, List[str]] = {}
 for _r in RAION_REGISTRY:

@@ -42,12 +42,19 @@ class LightGBMQuantileModel:
                 X[col] = X[col].astype("category")
         return X
 
-    def fit(self, df_train: pd.DataFrame, target_col: str) -> "LightGBMQuantileModel":
+    def fit(
+        self,
+        df_train: pd.DataFrame,
+        target_col: str,
+        weight_col: Optional[str] = None,
+    ) -> "LightGBMQuantileModel":
         if self.feature_cols is None:
             exclude = {
                 "as_of_ts", "start_ts", "gap_start_ts", "total_duration_min",
                 "total_gap_min", "region_en", target_col,
             }
+            if weight_col:
+                exclude.add(weight_col)
             target_prefixes = ("target_",)
             self.feature_cols = [
                 c for c in df_train.columns
@@ -56,6 +63,7 @@ class LightGBMQuantileModel:
 
         X_train = self._prepare_data(df_train)
         y_train = df_train[target_col].values
+        sample_weight = df_train[weight_col].values if weight_col else None
 
         self.models = {}
         for alpha in self.quantiles:
@@ -68,7 +76,7 @@ class LightGBMQuantileModel:
                 random_state=42,
                 verbosity=-1,
             )
-            model.fit(X_train, y_train)
+            model.fit(X_train, y_train, sample_weight=sample_weight)
             self.models[alpha] = model
 
         return self

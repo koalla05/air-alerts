@@ -4,8 +4,13 @@ re-execution) never spam the API.
 
 Docs: https://devs.alerts.in.ua/
 Rate limits per the docs: ~8-10 req/min soft limit (12 req/min hard limit)
-for most endpoints; the /regions/{uid}/alerts/{period} history endpoint is
-limited to 2 req/min and the docs advise against polling it in real time.
+for most endpoints; the docs describe the /regions/{uid}/alerts/{period}
+history endpoint as limited to 2 req/min and advise against polling it in
+real time. The server's actual enforcement, confirmed from a live 429
+response, is a rolling 30 calls / 10 minutes - a plain per-call minimum
+spacing isn't enough to respect that across multiple separate process runs
+in the same window, so the limiter tracks a persisted sliding-window call
+count per bucket, not just the time of the last call.
 """
 import hashlib
 import json
@@ -22,13 +27,18 @@ API_BASE_URL = "https://api.alerts.in.ua"
 CACHE_DIR = DATA_DIR / "cache" / "alerts_in_ua"
 _RATE_STATE_PATH = CACHE_DIR / "_rate_state.json"
 
-# Minimum seconds between two *actual* network requests, per rate-limit bucket.
-# A cache hit resolved via a 304 still counts here (it's still a request),
-# but a cache hit served without even calling the API (see live.py's short
-# TTL cache) does not.
-_RATE_LIMIT_INTERVAL_SEC = {
-    "default": 7.0,   # keeps us comfortably under the 8-10/min soft limit
-    "history": 31.0,  # history endpoint: 2 req/min
+# Sliding-window call budget per rate-limit bucket: at most `max_calls`
+# *actual* network requests within `window_sec`. A cache hit resolved via a
+# 304 still counts here (it's still a request to the server); a cache hit
+# served without even calling the API (a TTL hit here, or live.py's short
+# TTL cache for live status) does not.
+_RATE_LIMIT_WINDOW_SEC = {
+    "default": 60.0,
+    "history": 600.0,  # observed server enforcement: 30 calls / 10 min
+}
+_RATE_LIMIT_MAX_CALLS = {
+    "default": 8,    # keeps us comfortably under the docs' 8-10/min soft limit
+    "history": 25,   # margin below the observed 30/10min hard limit
 }
 
 _dotenv_loaded = False
@@ -66,7 +76,7 @@ def _cache_file_for(cache_key: str) -> Path:
     return CACHE_DIR / f"{digest}.json"
 
 
-def _load_rate_state() -> Dict[str, float]:
+def _load_rate_state() -> Dict[str, list]:
     if _RATE_STATE_PATH.exists():
         try:
             return json.loads(_RATE_STATE_PATH.read_text(encoding="utf-8"))
@@ -75,20 +85,32 @@ def _load_rate_state() -> Dict[str, float]:
     return {}
 
 
-def _save_rate_state(state: Dict[str, float]) -> None:
+def _save_rate_state(state: Dict[str, list]) -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     _RATE_STATE_PATH.write_text(json.dumps(state), encoding="utf-8")
 
 
 def _throttle(bucket: str) -> None:
-    """Block until it is safe to send another request for this rate-limit bucket."""
+    """Block until the sliding-window call budget for this bucket has room,
+    then record this call. State is persisted to disk so the budget is
+    shared across separate process runs (notebook kernels, Streamlit, ad-hoc
+    scripts) hitting the same bucket in the same window."""
+    window = _RATE_LIMIT_WINDOW_SEC.get(bucket, _RATE_LIMIT_WINDOW_SEC["default"])
+    max_calls = _RATE_LIMIT_MAX_CALLS.get(bucket, _RATE_LIMIT_MAX_CALLS["default"])
+
+    now = time.time()
     state = _load_rate_state()
-    last_call = state.get(bucket, 0.0)
-    interval = _RATE_LIMIT_INTERVAL_SEC.get(bucket, _RATE_LIMIT_INTERVAL_SEC["default"])
-    wait = interval - (time.time() - last_call)
-    if wait > 0:
-        time.sleep(wait)
-    state[bucket] = time.time()
+    calls = [t for t in state.get(bucket, []) if now - t < window]
+
+    if len(calls) >= max_calls:
+        wait = window - (now - calls[0]) + 0.5
+        if wait > 0:
+            time.sleep(wait)
+        now = time.time()
+        calls = [t for t in calls if now - t < window]
+
+    calls.append(now)
+    state[bucket] = calls
     _save_rate_state(state)
 
 
@@ -99,6 +121,7 @@ def request_json(
     params: Optional[Dict[str, Any]] = None,
     token: Optional[str] = None,
     use_cache: bool = True,
+    cache_ttl_sec: Optional[float] = None,
 ) -> Any:
     """
     GET a JSON endpoint from alerts.in.ua with disk caching and rate limiting.
@@ -108,6 +131,13 @@ def request_json(
     all endpoints); a 304 reuses the cached body. Set `use_cache=False` to
     always send a plain GET (still rate-limited, just without the
     conditional header / cache write).
+
+    `cache_ttl_sec`, if set, skips the network call (and the rate-limit
+    wait) entirely when the cached entry is younger than this - without it,
+    even a guaranteed-304 response still pays the full per-request rate
+    limit wait on every call, which makes re-running something like a full
+    27-region history backfill shortly after a previous run slow for no
+    reason (see notebook 01, section 2.2).
     """
     resolved_token = get_api_token(token)
     if not resolved_token:
@@ -122,6 +152,11 @@ def request_json(
             cached = json.loads(cache_file.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             cached = None
+
+    if cached is not None and cache_ttl_sec is not None:
+        age = time.time() - cached.get("fetched_at", 0)
+        if age < cache_ttl_sec:
+            return cached["body"]
 
     headers = {"Authorization": f"Bearer {resolved_token}"}
     if cached and cached.get("last_modified"):
@@ -163,14 +198,25 @@ def fetch_active_alerts(token: Optional[str] = None) -> Dict[str, Any]:
     return request_json("/v1/alerts/active.json", bucket="default", token=token)
 
 
-def fetch_region_history(uid: int, period: str = "month_ago", token: Optional[str] = None) -> Dict[str, Any]:
+def fetch_region_history(
+    uid: int,
+    period: str = "month_ago",
+    token: Optional[str] = None,
+    cache_ttl_sec: float = 7200.0,
+) -> Dict[str, Any]:
     """GET /v1/regions/{uid}/alerts/{period}.json -> {"alerts": [...]}.
 
-    Only `month_ago` is documented (a rolling 30-day lookback from today).
-    History responses are cached indefinitely per (uid, period) call - call
-    `clear_history_cache` or delete the cache dir to force a refresh.
+    Only `month_ago` is documented (a rolling 30-day lookback from today),
+    a slowly-changing window - the 30-calls/10-min server limit (see
+    AlertsApiError 429 handling in the caller) barely covers one full
+    27-region pass, so responses younger than `cache_ttl_sec` (default 2h)
+    are served straight from disk with no network call at all. Delete the
+    file under `data/cache/alerts_in_ua/` (or pass `cache_ttl_sec=0`) to
+    force a refresh sooner.
     """
-    return request_json(f"/v1/regions/{uid}/alerts/{period}.json", bucket="history", token=token)
+    return request_json(
+        f"/v1/regions/{uid}/alerts/{period}.json", bucket="history", token=token, cache_ttl_sec=cache_ttl_sec
+    )
 
 
 def fetch_oblast_status_string(token: Optional[str] = None) -> str:

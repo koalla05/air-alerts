@@ -66,6 +66,8 @@ from alertpred.config import (
 from alertpred.data.cleaning import (
     load_raw_data,
     clean_alerts,
+    build_oblast_rollup_episodes,
+    load_and_clean_volunteer_data,
     build_gap_episodes,
     create_time_split,
 )
@@ -100,17 +102,18 @@ print(f"Raw data path: {RAW_DATA_PATH} (exists: {RAW_DATA_PATH.exists()})")""")
 
     # Section 2: Data Ingestion & Cleaning
     add_md("""## 2. Data Ingestion & Cleaning
-According to **PLAN.md Section 3.4**, raw alerts data requires:
-1. Filtering by `level == 'oblast'` for macroscopic regional forecasting.
-2. Parsing timestamps to UTC.
-3. Filtering out technical glitches (< 1 minute) and unbounded anomalies.
-4. Deduplicating overlapping intervals.
-5. Mapping Ukrainian oblast names to standardized IDs.
+Per **PLAN.md Section 3.4**: parse timestamps to UTC, drop technical
+glitches (< 1 minute) and unbounded anomalies, deduplicate overlapping
+intervals, map Ukrainian oblast names to standardized IDs.
 
-The GitHub dataset (section 2.1) stops updating at some point in the past.
-Sections 2.2-2.4 backfill the gap up to "now" using the alerts.in.ua API
-and validate the backfilled data before merging it into the table the rest
-of this notebook uses.""")
+What's *not* a simple filter: oblast-level forecasting needs oblast-level
+episodes, but as section 2.1b shows, a naive `level == 'oblast'` filter
+badly under-counts recent activity, because reporting granularity itself
+changed partway through the dataset. Section 2.1b fixes that with a
+rollup. Sections 2.2-2.4 then backfill the gap up to "now" using the
+alerts.in.ua API (affected by the same granularity shift, fixed the same
+way) and validate everything before merging into the table the rest of
+this notebook uses.""")
 
     add_md("### 2.1 Original Historical Dataset (GitHub)")
     add_code("""# Load raw data
@@ -118,18 +121,64 @@ df_raw = load_raw_data(RAW_DATA_PATH)
 print(f"Total raw records: {len(df_raw):,}")
 display(df_raw.head())""")
 
-    add_code("""# Clean alerts
-df_alerts_github = clean_alerts(df_raw, filter_level='oblast', min_duration_sec=60)
-print(f"Cleaned alert episodes: {len(df_alerts_github):,}")
+    add_code("""# Naive cleaning: native oblast-level rows only (kept here to demonstrate
+# the bias in 2.1b - NOT used for the rest of the notebook)
+df_alerts_naive = clean_alerts(df_raw, filter_level='oblast', min_duration_sec=60)
+print(f"Naive oblast-only episodes: {len(df_alerts_naive):,}")
+print(f"Date range: {df_alerts_naive['started_at'].min().strftime('%Y-%m-%d')} to {df_alerts_naive['started_at'].max().strftime('%Y-%m-%d')}")""")
+
+    add_md("""### 2.1b The Granularity-Shift Bias, and Fixing It
+Ukraine's official alert reporting shifted from oblast-wide blanket alerts
+to localized raion/hromada alerts over Aug-Nov 2025 (plotted below). A
+`level == 'oblast'` filter treats that shift as "alerts nearly stopped,"
+which is false - activity continued, just reported at finer granularity.
+
+`alertpred.data.cleaning.build_oblast_rollup_episodes` fixes this: it uses
+*every* row regardless of level, and merges overlapping/touching
+raion/hromada alerts within the same oblast into oblast-level episodes
+(`alertpred.data.rollup`). Each resulting episode is tagged `level='oblast'`
+if built entirely from native oblast-wide rows, or `level='oblast_rollup'`
+if it required merging sub-oblast rows - so the derivation stays visible
+rather than hidden.""")
+
+    add_code("""# Bias-corrected cleaning: rolls raion/hromada alerts up to oblast level
+df_alerts_github = build_oblast_rollup_episodes(df_raw, min_duration_sec=60)
+print(f"Rollup-corrected episodes: {len(df_alerts_github):,}  (naive oblast-only was {len(df_alerts_naive):,})")
 print(f"Number of regions: {df_alerts_github['region_id'].nunique()}")
 print(f"Date range: {df_alerts_github['started_at'].min().strftime('%Y-%m-%d')} to {df_alerts_github['started_at'].max().strftime('%Y-%m-%d')}")
+display(df_alerts_github['level'].value_counts().rename('episodes'))
 display(df_alerts_github.head())""")
+
+    add_code("""# The bias, visualized: naive monthly volume (looks like alerts collapsed)
+# vs. rollup-corrected monthly volume (continuous, because they didn't)
+naive_monthly = df_alerts_naive.set_index('started_at').resample('ME').size()
+rollup_monthly = df_alerts_github.set_index('started_at').resample('ME').size()
+
+fig, axes = plt.subplots(1, 2, figsize=(16, 4.5), sharey=True)
+naive_monthly.plot(kind='bar', ax=axes[0], color='#b91c1c', edgecolor='black', alpha=0.85)
+axes[0].set_title("BIASED: naive level=='oblast' filter\\n(looks like alerts nearly stopped in late 2025)")
+axes[0].set_xlabel("")
+axes[0].set_xticklabels([t.get_text()[:7] for t in axes[0].get_xticklabels()], rotation=90, fontsize=7)
+
+rollup_monthly.plot(kind='bar', ax=axes[1], color='#15803d', edgecolor='black', alpha=0.85)
+axes[1].set_title("CORRECTED: rolled up to oblast level\\n(continuous - the alerts just moved to raion granularity)")
+axes[1].set_xlabel("")
+axes[1].set_xticklabels([t.get_text()[:7] for t in axes[1].get_xticklabels()], rotation=90, fontsize=7)
+
+plt.tight_layout()
+plt.show()
+
+print("Rollup composition in the most recent 6 months (share built from sub-oblast rows):")
+recent = df_alerts_github[df_alerts_github['started_at'] >= df_alerts_github['started_at'].max() - pd.Timedelta(days=180)]
+display((recent['level'].value_counts(normalize=True) * 100).round(1).rename('pct'))""")
 
     add_md("""### 2.2 Backfilling Recent Data via the alerts.in.ua API
 [devs.alerts.in.ua](https://devs.alerts.in.ua/) exposes `/v1/regions/{uid}/alerts/month_ago.json`,
 a rolling ~30-day history per oblast. We fetch it for all 27 oblasts and
-reshape it into the same episode schema as the GitHub dataset so the two
-can be concatenated.
+reshape it into the same rollup episode schema as 2.1b (alerts.in.ua is
+*also* almost entirely raion-level now - a naive oblast-type filter here
+would return close to nothing for every oblast except Kyiv city) so the two
+sources can be concatenated.
 
 **Caching & rate limits (per the docs):** this endpoint is limited to
 2 requests/minute. `alertpred.ingestion.alerts_client` caches every response
@@ -166,9 +215,9 @@ else:
     add_md("""### 2.3 Validating the Backfilled Data
 Before trusting the new source, sanity-check it against the GitHub dataset:
 coverage (does it actually close the gap?), any remaining uncovered gap,
-and whether duration distributions are in the same ballpark (a large
-divergence would indicate a parsing or schema mismatch, not a real
-behavioral shift).""")
+rollup composition (native vs. derived), and whether duration distributions
+are in the same ballpark (a large divergence would indicate a parsing or
+schema mismatch, not a real behavioral shift).""")
 
     add_code("""if df_alerts_api.empty:
     print("No API data fetched - nothing to validate.")
@@ -184,6 +233,9 @@ else:
     else:
         print(f"\\nSources overlap by {gh_end - api_start} - the merge step (2.4) de-duplicates this overlap.")
 
+    print("\\nalerts.in.ua rollup composition (native oblast-wide vs. derived from raion/hromada):")
+    display((df_alerts_api['level'].value_counts(normalize=True) * 100).round(1).rename('pct'))
+
     # Duration sanity check: distributions should be broadly comparable across sources
     compare = pd.concat([
         df_alerts_github.assign(_source='github')[['_source', 'duration_min']],
@@ -195,16 +247,63 @@ else:
     print("\\nNew episodes per region (alerts.in.ua backfill):")
     display(df_alerts_api.groupby('region_en').size().sort_values(ascending=False).rename('new_episodes'))""")
 
+    add_md("""### 2.3b A Third Source for the Remaining Gap: the Volunteer Dataset
+Even after the API backfill, section 2.3 found a real uncovered gap between
+the GitHub CSV's last record and alerts.in.ua's earliest one. The same
+GitHub repo also publishes `volunteer_data_uk.csv` - independently
+collected from the [eTryvoga](https://app.etryvoga.com) Telegram channel,
+covering back to Feb 2022.
+
+**Checking it before trusting it** (per the repo's own README caveats):
+it only reports oblast-level events, and `naive=True` rows have no real end
+time - they're stamped `started_at + 30min` as a placeholder, not measured.
+More importantly, cross-checking it against our official-rollup data for an
+overlapping month shows it is not a drop-in replacement: for Kharkiv in
+August 2026, it reports far more, much shorter episodes that don't even
+align in time with the official-rollup ones - a different detection
+methodology, not just a different granularity of the same events.
+Given that mismatch, it's used *only* to fill the specific date gap left
+over after 2.3, not blended across the whole timeline where it would mix
+two differently-measured distributions into one.""")
+
+    add_code("""df_volunteer = load_and_clean_volunteer_data()
+print(f"Volunteer dataset: {len(df_volunteer):,} cleaned episodes, {df_volunteer['started_at'].min().strftime('%Y-%m-%d')} to {df_volunteer['started_at'].max().strftime('%Y-%m-%d')}")
+
+# Quality check: compare against the official rollup for an overlapping month,
+# same region - do NOT expect these to match if this is a different
+# measurement methodology (it isn't just a finer/coarser view of the same events)
+check_region, check_month = 'kharkiv', '2026-08'
+vol_check = df_volunteer[(df_volunteer['region_id'] == check_region) & (df_volunteer['started_at'].dt.strftime('%Y-%m') == check_month)]
+off_check = df_alerts_github[(df_alerts_github['region_id'] == check_region) & (df_alerts_github['started_at'].dt.strftime('%Y-%m') == check_month)]
+print(f"\\n{check_region}, {check_month} - volunteer: {len(vol_check)} episodes (mean {vol_check['duration_min'].mean():.0f} min) "
+      f"vs official-rollup: {len(off_check)} episodes (mean {off_check['duration_min'].mean():.0f} min)")
+print("(large disagreement expected and OK here - this is exactly why it's scoped to the gap-fill only, not merged wholesale)")""")
+
+    add_code("""# Apply narrowly: only the window the other two sources don't cover
+gap_start, gap_end = df_alerts_github['started_at'].max(), df_alerts_api['started_at'].min() if not df_alerts_api.empty else None
+
+if gap_end is not None and gap_end > gap_start:
+    df_volunteer_gapfill = df_volunteer[(df_volunteer['started_at'] >= gap_start) & (df_volunteer['started_at'] < gap_end)]
+    print(f"Gap window: {gap_start} to {gap_end} ({gap_end - gap_start})")
+    print(f"Volunteer episodes available to fill it: {len(df_volunteer_gapfill):,}")
+    display(df_volunteer_gapfill.groupby('region_en').size().sort_values(ascending=False).rename('gapfill_episodes').head(10))
+else:
+    df_volunteer_gapfill = df_volunteer.iloc[0:0]
+    print("No gap to fill (or no API data) - skipping.")""")
+
     add_md("""### 2.4 Merging into the Final Alerts Table
-Concatenate both sources and de-duplicate on `(region_id, started_at)` -
+Concatenate all three sources and de-duplicate on `(region_id, started_at)` -
 the same rule `clean_alerts` uses internally - so an overlapping tail
 produces no duplicate episodes. Everything from here on uses this merged
 `df_alerts`.""")
 
-    add_code("""df_alerts = merge_with_existing(df_alerts_github, df_alerts_api)
-print(f"Final merged alert episodes: {len(df_alerts):,}  (GitHub: {len(df_alerts_github):,}, alerts.in.ua: {len(df_alerts_api):,})")
+    add_code("""df_alerts = merge_with_existing(df_alerts_github, df_volunteer_gapfill)
+df_alerts = merge_with_existing(df_alerts, df_alerts_api)
+print(f"Final merged alert episodes: {len(df_alerts):,}  "
+      f"(GitHub: {len(df_alerts_github):,}, volunteer gap-fill: {len(df_volunteer_gapfill):,}, alerts.in.ua: {len(df_alerts_api):,})")
 print(f"Number of regions: {df_alerts['region_id'].nunique()}")
 print(f"Date range: {df_alerts['started_at'].min().strftime('%Y-%m-%d')} to {df_alerts['started_at'].max().strftime('%Y-%m-%d')}")
+display(df_alerts['level'].value_counts().rename('episodes'))
 display(df_alerts.tail())""")
 
     add_code("""# Build Task B Quiet Gap episodes (time between consecutive alerts per region)

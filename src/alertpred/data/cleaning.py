@@ -3,6 +3,17 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, Tuple, Union
 from ..config import RAW_DATA_PATH, REGION_MAPPING
+from .rollup import build_rollup_episodes_df
+
+
+def _map_oblast_name(oblast_name: str) -> Tuple[str, str]:
+    """Ukrainian oblast display name -> (region_id, region_en)."""
+    info = REGION_MAPPING.get(oblast_name)
+    if info:
+        return info["id"], info["en"]
+    # Fallback slugification for any unmapped name
+    clean_id = oblast_name.replace(" ", "_").replace("’", "").replace("'", "").lower()
+    return clean_id, oblast_name
 
 
 def load_raw_data(filepath: Optional[Union[str, Path]] = None) -> pd.DataFrame:
@@ -54,20 +65,7 @@ def clean_alerts(
     df = df[(df["duration_min"] >= min_duration_min) & (df["duration_min"] <= max_duration_min)].copy()
 
     # Map oblast to standardized keys
-    def map_oblast(oblast_name: str) -> Tuple[str, str]:
-        info = REGION_MAPPING.get(oblast_name)
-        if info:
-            return info["id"], info["en"]
-        # Fallback slugification
-        clean_id = (
-            oblast_name.replace(" ", "_")
-            .replace("’", "")
-            .replace("'", "")
-            .lower()
-        )
-        return clean_id, oblast_name
-
-    mapped = [map_oblast(name) for name in df["oblast"]]
+    mapped = [_map_oblast_name(name) for name in df["oblast"]]
     df["region_id"] = [m[0] for m in mapped]
     df["region_en"] = [m[1] for m in mapped]
 
@@ -78,6 +76,110 @@ def clean_alerts(
     # Keep the record with the maximum duration if multiple alerts start at the exact same minute
     df = df.drop_duplicates(subset=["region_id", "started_at"], keep="last").reset_index(drop=True)
 
+    return df
+
+
+def build_oblast_rollup_episodes(
+    df_raw: pd.DataFrame,
+    min_duration_sec: int = 60,
+    max_duration_hours: int = 72,
+) -> pd.DataFrame:
+    """
+    Oblast-level episodes derived from *all* rows (oblast, raion, hromada -
+    unlike `clean_alerts`, which only keeps native `level == 'oblast'` rows).
+
+    From roughly Aug-Nov 2025 onward, native oblast-level rows are rare (see
+    the EDA notebook) because reporting shifted to raion/hromada
+    granularity - a naive oblast filter makes it look like alerts nearly
+    stopped. This rolls sub-oblast alerts up to "was any part of this
+    oblast under alert", merging overlapping/touching intervals per region
+    via `data.rollup.build_rollup_episodes_df`, giving a continuous,
+    comparable oblast-level signal across the whole timeline.
+
+    Output schema matches `clean_alerts()`, plus `level` is `"oblast"` for
+    episodes built entirely from native oblast-level rows and
+    `"oblast_rollup"` for ones that include at least one derived
+    raion/hromada row.
+    """
+    df = df_raw.dropna(subset=["oblast", "started_at", "finished_at"]).copy()
+    df["started_at"] = pd.to_datetime(df["started_at"], utc=True)
+    df["finished_at"] = pd.to_datetime(df["finished_at"], utc=True)
+
+    mapped = [_map_oblast_name(name) for name in df["oblast"]]
+    df["region_id"] = [m[0] for m in mapped]
+    df["region_en"] = [m[1] for m in mapped]
+    df["is_native_oblast"] = df["level"] == "oblast"
+
+    return build_rollup_episodes_df(
+        df,
+        min_duration_sec=min_duration_sec,
+        max_duration_hours=max_duration_hours,
+    )
+
+
+VOLUNTEER_DATA_PATH = RAW_DATA_PATH.parent / "volunteer_data_uk.csv"
+
+# This source uses "Київ" where official/REGION_MAPPING uses "м. Київ"; Crimea
+# and Sevastopol never appear at all (per the dataset's own README, both have
+# had a continuous/"permanent" siren since 2022 that was never logged as a
+# discrete event in either dataset - see PLAN.md's open question on how to
+# handle those two regions).
+_VOLUNTEER_NAME_FIXUPS = {"Київ": "м. Київ"}
+
+
+def load_and_clean_volunteer_data(
+    filepath: Optional[Union[str, Path]] = None,
+    drop_naive: bool = True,
+    min_duration_sec: int = 60,
+    max_duration_hours: float = 72.0,
+) -> pd.DataFrame:
+    """
+    Load and clean the volunteer dataset (eTryvoga-sourced, oblast-level
+    only - see https://github.com/Vadimkin/ukrainian-air-raid-sirens-dataset).
+
+    This is a *differently-measured* signal, not a drop-in replacement for
+    the official data: compared oblast-for-oblast and month-for-month
+    against the official rollup, it reports many more, much shorter
+    episodes (e.g. Kharkiv, Aug 2026: ~490 episodes averaging ~19 min here
+    vs. ~130 averaging ~290 min in the official rollup) and the events
+    don't line up in time either - a different detection methodology, not
+    just a different granularity of the same underlying events. Rows are
+    tagged `level='oblast_volunteer'` (never `'oblast'`/`'oblast_rollup'`)
+    so this is never silently conflated with the official data downstream.
+
+    `naive=True` rows (per the dataset's docs) have no real end time - they
+    are stamped `finished_at = started_at + 30min` as a placeholder, not a
+    measurement, so `drop_naive=True` (default) excludes them rather than
+    feeding a fabricated constant into any duration model.
+    """
+    path = Path(filepath) if filepath else VOLUNTEER_DATA_PATH
+    if not path.exists():
+        raise FileNotFoundError(f"Volunteer data file not found at: {path}")
+
+    df = pd.read_csv(path, parse_dates=["started_at", "finished_at"])
+    if drop_naive:
+        df = df[~df["naive"]].copy()
+
+    df["region"] = df["region"].replace(_VOLUNTEER_NAME_FIXUPS)
+    mapped = [_map_oblast_name(name) for name in df["region"]]
+    df["region_id"] = [m[0] for m in mapped]
+    df["region_en"] = [m[1] for m in mapped]
+
+    df["duration_min"] = (df["finished_at"] - df["started_at"]).dt.total_seconds() / 60.0
+    min_duration_min = min_duration_sec / 60.0
+    max_duration_min = max_duration_hours * 60.0
+    df = df[(df["duration_min"] >= min_duration_min) & (df["duration_min"] <= max_duration_min)].copy()
+
+    df["oblast"] = df["region"]
+    df["raion"] = None
+    df["hromada"] = None
+    df["level"] = "oblast_volunteer"
+    df["source"] = "volunteer"
+
+    cols = ["oblast", "raion", "hromada", "level", "started_at", "finished_at", "source",
+            "duration_min", "region_id", "region_en"]
+    df = df[cols].sort_values(["region_id", "started_at"]).reset_index(drop=True)
+    df = df.drop_duplicates(subset=["region_id", "started_at"], keep="last").reset_index(drop=True)
     return df
 
 
