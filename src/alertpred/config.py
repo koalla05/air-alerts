@@ -18,6 +18,13 @@ QUANTILES = [0.10, 0.50, 0.90]
 # Standard sampling grid for elapsed time during alerts (minutes)
 ELAPSED_SAMPLE_STEPS = [0, 5, 10, 15, 20, 30, 45, 60, 90, 120]
 
+# Recency weight half-life for training (days): an episode this old counts
+# half as much as a fresh one. Chosen in notebooks/02_regime_comparison.ipynb,
+# which found recency-weighting the full history beats training only on data
+# since the oblast->raion reporting shift (see that notebook for the
+# comparison and data/rollup.py for why the shift matters at all).
+RECENCY_HALF_LIFE_DAYS = 60.0
+
 # Mapping Ukrainian Oblast names to clean standardized English & canonical IDs
 REGION_MAPPING: Dict[str, Dict[str, str]] = {
     "м. Київ": {"en": "Kyiv City", "id": "kyiv_city"},

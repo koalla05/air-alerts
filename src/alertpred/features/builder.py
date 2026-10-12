@@ -5,7 +5,28 @@ from ..config import (
     ELAPSED_SAMPLE_STEPS,
     TASK_A_HORIZONS_MIN,
     TASK_B_HORIZONS_MIN,
+    RECENCY_HALF_LIFE_DAYS,
 )
+
+
+def compute_recency_weight(
+    timestamps: pd.Series,
+    reference_ts: Optional[pd.Timestamp] = None,
+    half_life_days: float = RECENCY_HALF_LIFE_DAYS,
+) -> pd.Series:
+    """
+    Exponential recency weight: `0.5 ** (age_days / half_life_days)`, so an
+    episode `half_life_days` old counts half as much as one dated
+    `reference_ts` itself (default: the latest timestamp in the series,
+    i.e. "now" for a freshly-built training set). See
+    notebooks/02_regime_comparison.ipynb for why training on the full
+    history this way beats a hard cutoff at the oblast->raion reporting
+    shift.
+    """
+    if reference_ts is None:
+        reference_ts = timestamps.max()
+    age_days = (reference_ts - timestamps).dt.total_seconds() / 86400.0
+    return 0.5 ** (age_days / half_life_days)
 
 
 def compute_cyclical_time_features(timestamps: pd.Series) -> pd.DataFrame:

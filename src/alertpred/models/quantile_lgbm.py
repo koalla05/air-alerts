@@ -133,8 +133,9 @@ class LightGBMProbabilityModel:
                 X[col] = X[col].astype("category")
         return X
 
-    def fit(self, df_train: pd.DataFrame) -> "LightGBMProbabilityModel":
+    def fit(self, df_train: pd.DataFrame, weight_col: Optional[str] = None) -> "LightGBMProbabilityModel":
         X_train = self._prepare_data(df_train)
+        sample_weight = df_train[weight_col].values if weight_col else None
         self.models = {}
 
         for h in self.target_horizons:
@@ -150,7 +151,7 @@ class LightGBMProbabilityModel:
                 random_state=42,
                 verbosity=-1,
             )
-            clf.fit(X_train, y_train)
+            clf.fit(X_train, y_train, sample_weight=sample_weight)
             self.models[h] = clf
 
         return self
@@ -202,18 +203,18 @@ class AlertPredictionPipeline:
             ],
         )
 
-    def fit_task_a(self, df_train_a: pd.DataFrame):
+    def fit_task_a(self, df_train_a: pd.DataFrame, weight_col: Optional[str] = None):
         print("Training Task A (Remaining alert duration quantiles P10/P50/P90)...")
-        self.task_a_quantile.fit(df_train_a, target_col="target_remaining_min")
+        self.task_a_quantile.fit(df_train_a, target_col="target_remaining_min", weight_col=weight_col)
         print("Training Task A (Probability of alert end within 15/30/60m)...")
-        self.task_a_probs.fit(df_train_a)
+        self.task_a_probs.fit(df_train_a, weight_col=weight_col)
         return self
 
-    def fit_task_b(self, df_train_b: pd.DataFrame):
+    def fit_task_b(self, df_train_b: pd.DataFrame, weight_col: Optional[str] = None):
         print("Training Task B (Quiet gap until next alert quantiles P10/P50/P90)...")
-        self.task_b_quantile.fit(df_train_b, target_col="target_remaining_gap_min")
+        self.task_b_quantile.fit(df_train_b, target_col="target_remaining_gap_min", weight_col=weight_col)
         print("Training Task B (Probability of next alert within 1h/3h/6h)...")
-        self.task_b_probs.fit(df_train_b)
+        self.task_b_probs.fit(df_train_b, weight_col=weight_col)
         return self
 
     def predict_active_alert(

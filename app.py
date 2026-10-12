@@ -12,6 +12,7 @@ from alertpred.config import (
     REGION_MAPPING,
     MODELS_DIR,
     RAW_DATA_PATH,
+    PROCESSED_DATA_DIR,
 )
 from alertpred.models.quantile_lgbm import AlertPredictionPipeline
 from alertpred.ingestion.live import get_live_alerts_status, ISO_MAPPING
@@ -40,6 +41,22 @@ def load_trained_pipeline():
 
 
 pipeline = load_trained_pipeline()
+
+
+@st.cache_data(ttl=600)
+def load_last_alert_end_by_region():
+    """Last known alert end per region, from the processed episode table
+    (written by `train.py`), used to compute a real elapsed-quiet time
+    instead of the rough placeholder `get_live_alerts_status` otherwise
+    falls back to (flat 4h for Kyiv, 8h for everyone else - not real data)."""
+    path = PROCESSED_DATA_DIR / "cleaned_alerts.parquet"
+    if not path.exists():
+        return {}
+    df = pd.read_parquet(path, columns=["region_id", "finished_at"])
+    return df.groupby("region_id")["finished_at"].max().to_dict()
+
+
+last_alert_end_by_region = load_last_alert_end_by_region()
 
 
 # Sidebar: Region Selection & Simulation Controls
@@ -100,7 +117,7 @@ else:
     sim_quiet = 0.0
 
 # Fetch Live Status
-live_status = get_live_alerts_status()
+live_status = get_live_alerts_status(last_alert_end_by_region=last_alert_end_by_region)
 
 # Apply simulation override if active (to the raion if one is selected, else the whole oblast)
 if enable_sim_override:
@@ -205,7 +222,7 @@ with col_forecast:
         # Likelihood distribution curve
         st.markdown("#### Remaining Time Distribution")
         chart_fig = create_remaining_time_curve(elapsed_min, median_rem, p10, p90)
-        st.plotly_chart(chart_fig, use_container_width=True)
+        st.plotly_chart(chart_fig, width='stretch')
 
     else:
         quiet_hours = elapsed_quiet_min / 60.0
