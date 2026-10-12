@@ -13,6 +13,7 @@ from alertpred.config import (
     MODELS_DIR,
     PROCESSED_DATA_DIR,
     RECENCY_HALF_LIFE_DAYS,
+    OBLAST_NEIGHBORS,
 )
 from alertpred.data.build_dataset import build_master_alerts_dataset
 from alertpred.data.cleaning import create_time_split
@@ -20,6 +21,7 @@ from alertpred.features.builder import (
     sample_as_of_alert_moments,
     sample_as_of_gap_moments,
     compute_recency_weight,
+    compute_neighbor_active_features,
 )
 from alertpred.models.baseline import EmpiricalConditionalBaseline
 from alertpred.models.quantile_lgbm import AlertPredictionPipeline
@@ -96,6 +98,16 @@ def run_training_pipeline(
     print(f"Task A Snapshots -> Train: {len(train_a_samples):,}, Test: {len(test_a_samples):,}")
     print(f"Task B Snapshots -> Train: {len(train_b_samples):,}, Test: {len(test_b_samples):,}")
 
+    # 4b. Point-in-time neighbor-active features (notebooks/03_neighbor_features.ipynb
+    #     found a real MAE/pinball improvement from these for both quantile
+    #     tasks, most notably ~2.9% on Task B; no improvement for the
+    #     threshold-probability classifiers, which don't use them).
+    print("\n[4b/8] Computing neighbor-region context features...")
+    train_a_samples = compute_neighbor_active_features(train_a_samples, df_alerts, OBLAST_NEIGHBORS)
+    test_a_samples = compute_neighbor_active_features(test_a_samples, df_alerts, OBLAST_NEIGHBORS)
+    train_b_samples = compute_neighbor_active_features(train_b_samples, df_alerts, OBLAST_NEIGHBORS)
+    test_b_samples = compute_neighbor_active_features(test_b_samples, df_alerts, OBLAST_NEIGHBORS)
+
     # 5. Fit Baseline (recency-weighted, so the printed comparison matches
     #    what actually ships rather than an unweighted strawman)
     print("\n[5/8] Evaluating Empirical Conditional Baseline (recency-weighted)...")
@@ -142,7 +154,8 @@ def run_training_pipeline(
     saved_path = pipeline.save(output_model_path)
     print(f"Model pipeline successfully saved to: {saved_path}")
 
-    # Demo Inference
+    # Demo Inference (no live_status here, so neighbor-context features
+    # fall back to a quiet-everywhere 0 - app.py passes the real snapshot)
     print("\n" + "=" * 50)
     print("SAMPLE REAL-TIME INFERENCE:")
     demo_a = pipeline.predict_active_alert(region_id="kyiv_city", elapsed_min=30.0)

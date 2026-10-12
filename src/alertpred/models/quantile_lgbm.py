@@ -9,7 +9,15 @@ from ..config import (
     TASK_A_HORIZONS_MIN,
     TASK_B_HORIZONS_MIN,
     MODELS_DIR,
+    OBLAST_NEIGHBORS,
 )
+
+# Point-in-time spatial context (see features.builder.compute_neighbor_active_features
+# and notebooks/03_neighbor_features.ipynb): used by the quantile regressors
+# only, not the threshold-probability classifiers - the comparison notebook
+# found a real MAE/pinball improvement (most notably ~2.9% on Task B) for
+# the former and no improvement for the latter.
+NEIGHBOR_FEATURE_COLS = ["neighbors_active_count", "neighbors_active_frac", "national_active_count"]
 
 
 class LightGBMQuantileModel:
@@ -175,7 +183,7 @@ class AlertPredictionPipeline:
             feature_cols=[
                 "region_id", "elapsed_min", "hour_sin", "hour_cos",
                 "dow_sin", "dow_cos", "is_weekend", "month",
-            ],
+            ] + NEIGHBOR_FEATURE_COLS,
         )
         self.task_a_probs = LightGBMProbabilityModel(
             target_horizons=TASK_A_HORIZONS_MIN,
@@ -191,7 +199,7 @@ class AlertPredictionPipeline:
             feature_cols=[
                 "region_id", "elapsed_quiet_min", "prev_alert_duration_min",
                 "hour_sin", "hour_cos", "dow_sin", "dow_cos", "is_weekend", "month",
-            ],
+            ] + NEIGHBOR_FEATURE_COLS,
         )
         self.task_b_probs = LightGBMProbabilityModel(
             target_horizons=[1, 3, 6],
@@ -217,17 +225,40 @@ class AlertPredictionPipeline:
         self.task_b_probs.fit(df_train_b, weight_col=weight_col)
         return self
 
+    @staticmethod
+    def _live_neighbor_context(region_id: str, live_status: Optional[Dict[str, Any]]) -> Dict[str, float]:
+        """Real-time counterpart to features.builder.compute_neighbor_active_features,
+        read off a `get_live_alerts_status()` snapshot instead of historical
+        episodes. Without a snapshot (e.g. the train.py demo inference),
+        falls back to 0 for all three - a quiet-everywhere assumption,
+        clearly wrong on average but at least a defined, non-crashing input
+        rather than leaking a training-time global."""
+        if live_status is None:
+            return {c: 0.0 for c in NEIGHBOR_FEATURE_COLS}
+        regions = live_status.get("regions", {})
+        neighbor_ids = OBLAST_NEIGHBORS.get(region_id, [])
+        active_neighbors = sum(1 for n in neighbor_ids if regions.get(n, {}).get("is_active", False))
+        return {
+            "neighbors_active_count": float(active_neighbors),
+            "neighbors_active_frac": float(active_neighbors / len(neighbor_ids)) if neighbor_ids else 0.0,
+            "national_active_count": float(sum(1 for r in regions.values() if r.get("is_active", False))),
+        }
+
     def predict_active_alert(
         self,
         region_id: str,
         elapsed_min: float,
         timestamp: Optional[pd.Timestamp] = None,
+        live_status: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Inference for an active alert in a specific region."""
+        """Inference for an active alert in a specific region. Pass the
+        current `get_live_alerts_status()` snapshot as `live_status` so the
+        quantile model's neighbor-context features reflect what's actually
+        happening right now, not a quiet-everywhere default."""
         ts = timestamp or pd.Timestamp.now(tz="UTC")
         hour = ts.hour + ts.minute / 60.0
         dow = ts.dayofweek
-        
+
         sample = pd.DataFrame([{
             "region_id": region_id,
             "elapsed_min": float(elapsed_min),
@@ -237,6 +268,7 @@ class AlertPredictionPipeline:
             "dow_cos": np.cos(2 * np.pi * dow / 7.0),
             "is_weekend": int(dow >= 5),
             "month": ts.month,
+            **self._live_neighbor_context(region_id, live_status),
         }])
 
         preds_quant = self.task_a_quantile.predict(sample).iloc[0].to_dict()
@@ -262,12 +294,16 @@ class AlertPredictionPipeline:
         elapsed_quiet_min: float,
         prev_alert_duration_min: float = 45.0,
         timestamp: Optional[pd.Timestamp] = None,
+        live_status: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Inference for a quiet region predicting time until the next alert."""
+        """Inference for a quiet region predicting time until the next alert.
+        Pass the current `get_live_alerts_status()` snapshot as `live_status`
+        so the quantile model's neighbor-context features reflect what's
+        actually happening right now, not a quiet-everywhere default."""
         ts = timestamp or pd.Timestamp.now(tz="UTC")
         hour = ts.hour + ts.minute / 60.0
         dow = ts.dayofweek
-        
+
         sample = pd.DataFrame([{
             "region_id": region_id,
             "elapsed_quiet_min": float(elapsed_quiet_min),
@@ -278,6 +314,7 @@ class AlertPredictionPipeline:
             "dow_cos": np.cos(2 * np.pi * dow / 7.0),
             "is_weekend": int(dow >= 5),
             "month": ts.month,
+            **self._live_neighbor_context(region_id, live_status),
         }])
 
         preds_quant = self.task_b_quantile.predict(sample).iloc[0].to_dict()

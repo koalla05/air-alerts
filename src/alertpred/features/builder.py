@@ -180,3 +180,69 @@ def extract_point_in_time_features(
 
     return df
 
+
+def _active_at_timestamps(as_of_ts: pd.Series, episodes_sorted: pd.DataFrame) -> pd.Series:
+    """For each as_of_ts, was it inside some [started_at, finished_at) in
+    `episodes_sorted` (columns started_at/finished_at, sorted by started_at,
+    reset_index(drop=True))? A backward as-of join, so this only ever
+    matches an episode that had already started by as_of_ts."""
+    tmp = pd.DataFrame({"as_of_ts": as_of_ts}).sort_values("as_of_ts")
+    merged = pd.merge_asof(tmp, episodes_sorted, left_on="as_of_ts", right_on="started_at", direction="backward")
+    merged.index = tmp.index
+    active = (merged["as_of_ts"] < merged["finished_at"]).fillna(False)
+    return active.reindex(as_of_ts.index)
+
+
+def compute_neighbor_active_features(
+    samples_df: pd.DataFrame,
+    df_alerts: pd.DataFrame,
+    neighbors_map: dict,
+) -> pd.DataFrame:
+    """
+    Point-in-time-safe spatial context (PLAN.md Section 4.1, "likely the
+    most valuable feature group", deferred in the first pass - see
+    notebooks/03_neighbor_features.ipynb for the comparison this enables).
+
+    For each (region_id, as_of_ts) row in `samples_df`, computes how many of
+    its direct neighbors (per `neighbors_map`, e.g. config.OBLAST_NEIGHBORS)
+    - and how many regions nationally - had an active episode at exactly
+    that historical moment, via a backward as-of join against each region's
+    own sorted episode table in `df_alerts`. Only episodes that had already
+    started by `as_of_ts` can match, so no future information leaks in.
+
+    Adds `neighbors_active_count`, `neighbors_active_frac` (0 when a region
+    has no neighbors, e.g. Sevastopol), and `national_active_count`.
+    """
+    df = samples_df.copy()
+    episodes_by_region = {
+        region_id: group.sort_values("started_at")[["started_at", "finished_at"]].reset_index(drop=True)
+        for region_id, group in df_alerts.groupby("region_id")
+    }
+
+    # National count: one as-of join per region over the *unique* as_of_ts
+    # values (shared across every sample at that moment), not one per row.
+    unique_ts = pd.Series(df["as_of_ts"].unique())
+    national_count = pd.Series(0, index=unique_ts.index, dtype=float)
+    for ep in episodes_by_region.values():
+        if ep.empty:
+            continue
+        national_count += _active_at_timestamps(unique_ts, ep).astype(int).values
+    nat_lookup_df = pd.DataFrame({"as_of_ts": unique_ts, "national_active_count": national_count.values})
+    df = df.merge(nat_lookup_df, on="as_of_ts", how="left")
+
+    neighbors_active_count = pd.Series(0.0, index=df.index)
+    neighbors_total = pd.Series(0.0, index=df.index)
+    for region_id, group in df.groupby("region_id"):
+        region_neighbors = neighbors_map.get(region_id, [])
+        neighbors_total.loc[group.index] = len(region_neighbors)
+        for neighbor_id in region_neighbors:
+            ep = episodes_by_region.get(neighbor_id)
+            if ep is None or ep.empty:
+                continue
+            active = _active_at_timestamps(group["as_of_ts"], ep)
+            neighbors_active_count.loc[group.index] += active.astype(int)
+
+    df["neighbors_active_count"] = neighbors_active_count
+    df["neighbors_active_frac"] = (neighbors_active_count / neighbors_total.replace(0, np.nan)).fillna(0.0)
+    return df
+

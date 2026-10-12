@@ -196,7 +196,7 @@ with col_forecast:
         st.error(f"🚨 **ACTIVE AIR RAID ALERT** · Running for **{int(elapsed_min)} minutes**")
 
         # Inference for Active Alert
-        pred = pipeline.predict_active_alert(selected_region_id, elapsed_min=elapsed_min)
+        pred = pipeline.predict_active_alert(selected_region_id, elapsed_min=elapsed_min, live_status=live_status)
         median_rem = pred["predicted_remaining_median_min"]
         p10, p90 = pred["predicted_range_p10_p90_min"]
 
@@ -229,7 +229,7 @@ with col_forecast:
         st.success(f"✅ **NO ACTIVE ALERT** · Quiet for **{quiet_hours:.1f} hours**")
 
         # Inference for Quiet Period
-        pred = pipeline.predict_quiet_region(selected_region_id, elapsed_quiet_min=elapsed_quiet_min)
+        pred = pipeline.predict_quiet_region(selected_region_id, elapsed_quiet_min=elapsed_quiet_min, live_status=live_status)
         median_gap = pred["predicted_next_alert_gap_median_min"]
         p10, p90 = pred["predicted_range_p10_p90_min"]
 
