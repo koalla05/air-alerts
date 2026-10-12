@@ -69,6 +69,9 @@ from alertpred.data.cleaning import (
     build_gap_episodes,
     create_time_split,
 )
+from alertpred.ingestion.alerts_client import get_api_token
+from alertpred.ingestion.backfill import fetch_all_region_histories, merge_with_existing
+from alertpred.ingestion.live import get_live_alerts_status
 from alertpred.features.builder import (
     sample_as_of_alert_moments,
     sample_as_of_gap_moments,
@@ -102,24 +105,130 @@ According to **PLAN.md Section 3.4**, raw alerts data requires:
 2. Parsing timestamps to UTC.
 3. Filtering out technical glitches (< 1 minute) and unbounded anomalies.
 4. Deduplicating overlapping intervals.
-5. Mapping Ukrainian oblast names to standardized IDs.""")
+5. Mapping Ukrainian oblast names to standardized IDs.
 
+The GitHub dataset (section 2.1) stops updating at some point in the past.
+Sections 2.2-2.4 backfill the gap up to "now" using the alerts.in.ua API
+and validate the backfilled data before merging it into the table the rest
+of this notebook uses.""")
+
+    add_md("### 2.1 Original Historical Dataset (GitHub)")
     add_code("""# Load raw data
 df_raw = load_raw_data(RAW_DATA_PATH)
 print(f"Total raw records: {len(df_raw):,}")
 display(df_raw.head())""")
 
     add_code("""# Clean alerts
-df_alerts = clean_alerts(df_raw, filter_level='oblast', min_duration_sec=60)
-print(f"Cleaned alert episodes: {len(df_alerts):,}")
+df_alerts_github = clean_alerts(df_raw, filter_level='oblast', min_duration_sec=60)
+print(f"Cleaned alert episodes: {len(df_alerts_github):,}")
+print(f"Number of regions: {df_alerts_github['region_id'].nunique()}")
+print(f"Date range: {df_alerts_github['started_at'].min().strftime('%Y-%m-%d')} to {df_alerts_github['started_at'].max().strftime('%Y-%m-%d')}")
+display(df_alerts_github.head())""")
+
+    add_md("""### 2.2 Backfilling Recent Data via the alerts.in.ua API
+[devs.alerts.in.ua](https://devs.alerts.in.ua/) exposes `/v1/regions/{uid}/alerts/month_ago.json`,
+a rolling ~30-day history per oblast. We fetch it for all 27 oblasts and
+reshape it into the same episode schema as the GitHub dataset so the two
+can be concatenated.
+
+**Caching & rate limits (per the docs):** this endpoint is limited to
+2 requests/minute. `alertpred.ingestion.alerts_client` caches every response
+to `data/cache/alerts_in_ua/` on disk and sends `If-Modified-Since` on
+repeat calls, so **re-running this cell after the first time costs nothing**.
+A cold run across all 27 oblasts takes roughly 13-14 minutes.
+
+**Known limitation:** `month_ago` is the only documented lookback window -
+it cannot reach further back than ~30 days. If the GitHub dataset's tail is
+older than that, a gap will remain between the two sources (reported in 2.3).
+
+Requires `ALERTS_IN_UA_TOKEN` in the environment or a `.env` file (copy
+`.env.example` -> `.env` and fill in a token requested at the link above).
+Without a token this cell is skipped and the notebook continues with the
+GitHub-only dataset.""")
+
+    add_code("""# Fetch per-oblast history from alerts.in.ua (or skip gracefully if no token is configured)
+api_token = get_api_token()
+
+if not api_token:
+    print("No ALERTS_IN_UA_TOKEN found (env var or .env file).")
+    print("Skipping the API backfill - continuing with the GitHub historical dataset only.")
+    print("To enable: copy .env.example to .env and set your token (request one at https://devs.alerts.in.ua/).")
+    df_alerts_api = pd.DataFrame()
+else:
+    print("Token found. Fetching ~last 30 days of history per oblast from alerts.in.ua")
+    print("(cached on disk - a cold run takes ~13-14 min due to the API's 2 req/min history limit)\\n")
+    df_alerts_api = fetch_all_region_histories(period='month_ago')
+    n_regions = df_alerts_api['region_id'].nunique() if not df_alerts_api.empty else 0
+    print(f"\\nFetched {len(df_alerts_api):,} completed episodes across {n_regions} regions from alerts.in.ua")
+    if not df_alerts_api.empty:
+        display(df_alerts_api.head())""")
+
+    add_md("""### 2.3 Validating the Backfilled Data
+Before trusting the new source, sanity-check it against the GitHub dataset:
+coverage (does it actually close the gap?), any remaining uncovered gap,
+and whether duration distributions are in the same ballpark (a large
+divergence would indicate a parsing or schema mismatch, not a real
+behavioral shift).""")
+
+    add_code("""if df_alerts_api.empty:
+    print("No API data fetched - nothing to validate.")
+else:
+    print(f"GitHub dataset date range  : {df_alerts_github['started_at'].min().strftime('%Y-%m-%d %H:%M')} to {df_alerts_github['started_at'].max().strftime('%Y-%m-%d %H:%M')}")
+    print(f"alerts.in.ua date range    : {df_alerts_api['started_at'].min().strftime('%Y-%m-%d %H:%M')} to {df_alerts_api['started_at'].max().strftime('%Y-%m-%d %H:%M')}")
+
+    gh_end = df_alerts_github['started_at'].max()
+    api_start = df_alerts_api['started_at'].min()
+    if api_start > gh_end:
+        print(f"\\nWARNING: uncovered gap between the two sources: {gh_end} to {api_start} ({(api_start - gh_end)})")
+        print("(alerts.in.ua's history endpoint only exposes a rolling ~30-day window - see 2.2)")
+    else:
+        print(f"\\nSources overlap by {gh_end - api_start} - the merge step (2.4) de-duplicates this overlap.")
+
+    # Duration sanity check: distributions should be broadly comparable across sources
+    compare = pd.concat([
+        df_alerts_github.assign(_source='github')[['_source', 'duration_min']],
+        df_alerts_api.assign(_source='alerts_in_ua')[['_source', 'duration_min']],
+    ])
+    print("\\nDuration (minutes) by source, oblast-level episodes:")
+    display(compare.groupby('_source')['duration_min'].describe().round(1))
+
+    print("\\nNew episodes per region (alerts.in.ua backfill):")
+    display(df_alerts_api.groupby('region_en').size().sort_values(ascending=False).rename('new_episodes'))""")
+
+    add_md("""### 2.4 Merging into the Final Alerts Table
+Concatenate both sources and de-duplicate on `(region_id, started_at)` -
+the same rule `clean_alerts` uses internally - so an overlapping tail
+produces no duplicate episodes. Everything from here on uses this merged
+`df_alerts`.""")
+
+    add_code("""df_alerts = merge_with_existing(df_alerts_github, df_alerts_api)
+print(f"Final merged alert episodes: {len(df_alerts):,}  (GitHub: {len(df_alerts_github):,}, alerts.in.ua: {len(df_alerts_api):,})")
 print(f"Number of regions: {df_alerts['region_id'].nunique()}")
 print(f"Date range: {df_alerts['started_at'].min().strftime('%Y-%m-%d')} to {df_alerts['started_at'].max().strftime('%Y-%m-%d')}")
-display(df_alerts.head())""")
+display(df_alerts.tail())""")
 
     add_code("""# Build Task B Quiet Gap episodes (time between consecutive alerts per region)
 df_gaps = build_gap_episodes(df_alerts)
 print(f"Quiet gap episodes: {len(df_gaps):,}")
 display(df_gaps.head())""")
+
+    add_md("""### 2.5 Live Status Check (Current Information)
+Demonstrates `get_live_alerts_status`, which now parses the real
+`/v1/alerts/active.json` endpoint (real elapsed minutes per active region)
+instead of the old placeholder values, and uses the merged table above to
+compute real elapsed-quiet time for regions with no active alert. Falls
+back to a demo snapshot if no token is configured or the API is
+unreachable.""")
+
+    add_code("""last_end_by_region = df_alerts.groupby('region_id')['finished_at'].max().to_dict()
+live_status = get_live_alerts_status(last_alert_end_by_region=last_end_by_region)
+
+print(f"Mode: {'Live API' if live_status['is_live_api'] else 'Demo Simulation (no token / API unreachable)'}")
+print(f"Last updated: {live_status['last_updated']}")
+print(f"Active regions: {live_status['total_active_regions']} / {len(live_status['regions'])}")
+
+live_df = pd.DataFrame(live_status['regions']).T
+display(live_df.sort_values('is_active', ascending=False))""")
 
     # Section 3: Expanded EDA
     add_md("""## 3. Exploratory Data Analysis (EDA)

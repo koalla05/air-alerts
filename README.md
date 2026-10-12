@@ -98,6 +98,14 @@ To train the models, run evaluation on the test set, and save model artifacts:
 PYTHONPATH=src python -m alertpred.train --data data/raw/official_data_uk.csv
 ```
 
+### Launch the Interactive Web App (MVP)
+
+Start the Streamlit application to explore the live map and real-time expiration forecasts:
+
+```bash
+PYTHONPATH=src streamlit run app.py
+```
+
 ### Interactive Jupyter Notebook
 
 Open and explore the step-by-step pipeline:

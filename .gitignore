@@ -6,3 +6,5 @@ __pycache__/
 *.joblib
 .ipynb_checkpoints/
 data/raw/*.csv
+.env
+data/cache/

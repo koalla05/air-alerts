@@ -49,6 +49,37 @@ REGION_MAPPING: Dict[str, Dict[str, str]] = {
     "м. Севастополь": {"en": "Sevastopol", "id": "sevastopol"},
 }
 
+# region_id -> ISO 3166-2:UA code, matching ukraine_oblasts.geojson's shapeISO property
+ISO_MAPPING: Dict[str, str] = {
+    "kyiv_city": "UA-30",
+    "kyiv": "UA-32",
+    "kharkiv": "UA-63",
+    "dnipropetrovsk": "UA-12",
+    "donetsk": "UA-14",
+    "zaporizhzhia": "UA-23",
+    "mykolaiv": "UA-48",
+    "odesa": "UA-51",
+    "poltava": "UA-53",
+    "sumy": "UA-59",
+    "chernihiv": "UA-74",
+    "cherkasy": "UA-71",
+    "zhytomyr": "UA-18",
+    "vinnytsia": "UA-05",
+    "kirovohrad": "UA-35",
+    "khmelnytskyi": "UA-68",
+    "rivne": "UA-56",
+    "volyn": "UA-07",
+    "lviv": "UA-46",
+    "ternopil": "UA-61",
+    "ivano_frankivsk": "UA-26",
+    "chernivtsi": "UA-77",
+    "zakarpattia": "UA-21",
+    "kherson": "UA-65",
+    "luhansk": "UA-09",
+    "crimea": "UA-43",
+    "sevastopol": "UA-40",
+}
+
 # Adjacency graph for Ukrainian Oblasts (Neighboring regions)
 OBLAST_NEIGHBORS: Dict[str, List[str]] = {
     "kyiv_city": ["kyiv"],
