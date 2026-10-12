@@ -1,0 +1,57 @@
+
+Hi. My task is to create a pet project - Time Series Analysis of air raid alerts in Ukraine. Right now I want to create a plan for implementation to outline an app. I want to start with the most straightforward option - Real-Time Alert Duration & Expiration Predictor. Please outline me a plan for implementation of a simple app and its functionality: display map of Ukraine, show what regions are with air alert right now, and the ability to see when is predicted end of the air alert and predicted start of air alert for specific region. Include what models and approaches are the best for the use case. Note that everything should be on python and I want to create a pretty visuals as well. Don't write code yet - I want to create a clear strategy for now in .md format so I can put it in my repository for reference
+
+Created a file, shared a file
+I’ve put the plan in PLAN.md, ready to drop into your repository.
+
+Framing: Both predictions are time-to-event problems, not classic forecasting. The app has to answer “given the alert has already lasted t minutes, when does it end?”, and survival analysis handles that conditional question and the censoring of still-active alerts.
+
+Models: Build baselines first (empirical conditional median and Kaplan–Meier), then LightGBM quantile regression, which gives the P10/P50/P90 ranges the UI needs. After that, add a discrete-time hazard model for proper probability curves such as “ends within 30 min: 41%”. Weibull AFT serves as an interpretable benchmark. Hawkes processes and graph neural networks are listed as stretch goals.
+
+Most valuable features: Neighbor-region states, such as alerts propagating between oblasts, should matter most, so build them early.
+
+Data: The plan uses the alerts.in.ua API for live status plus a community historical dataset. Start polling and storing your own data on day 1. Check the API’s current access and terms of use before relying on it.
+
+App: Streamlit with Plotly (PyDeck as an upgrade) gives a dark-themed map, a region panel with prediction ranges and curves, a 24-hour timeline strip, and a data-freshness indicator.
+
+The file also covers evaluation (time-based splits only, calibration checks, leakage tests), a repo structure, a phased roadmap with checklists, risks, and a definition of done for the MVP. I included a disclaimer that this is a statistical experiment and not a safety tool, and I’d keep it visible in the UI.
+
+When you’re ready to start coding, I’d suggest beginning with Phase 0 and Phase 1, the region mapping and the poller, since the poller needs to run as early as possible to build up your own dataset.
+
+
+Plan
+Document·MD 
+And I need to add a little limitation - I have only a day or so to complete it. So please correct section 10. Implementation Roadmap and give me updated version
+
+Shared a file, ran a command
+I rewrote section 10 of PLAN.md as a one-day sprint of about 11 hours, plus a 1.5-hour optional stretch. The rest of the file is unchanged.
+
+What I cut:
+
+Models: The core is now empirical conditional quantiles plus Kaplan–Meier. They already give the median, the P10–P90 range and the “ends within X min” probabilities the UI needs. A single LightGBM quantile model is an optional stretch, kept only if it clearly beats the baseline.
+Data: The poller is out. You use the historical dataset plus the live API, cached.
+Deferred: Neighbor features, the hazard model, conformal intervals, deployment, CI and tests are all deferred to later.
+The sprint is split into blocks:
+
+Block	Task	Hours
+0	Setup, plus request the API token first	0.5
+1	Data and regions (the GeoJSON join takes time)	2.0
+2	Quick EDA	1.0
+3	Baseline models and evaluation	2.5
+4	Optional LightGBM	1.5 (stretch)
+5	App MVP	3.5
+6	Polish and README	1.5
+If you fall behind: Cut in this order: the LightGBM stretch, extra EDA, then the next-alert prediction (keeping only the end-of-alert prediction). Aim to have data, prediction and map working end to end by about hour 7.
+
+Request the API token right away, since approval may take a while. The plan includes a fallback “demo mode” that replays a historical snapshot if the token doesn’t arrive in time.
+
+Sections 3–9 and 11–13 still describe the full-scope version. If you’d like, I can add a short note at the top of PLAN.md saying the sprint scope applies to section 10 and the rest is the long-term vision.
+
+
+Plan
+Document·MD 
+
+
+
+Claude is AI and can make mistakes.
+

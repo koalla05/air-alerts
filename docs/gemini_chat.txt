@@ -1,0 +1,553 @@
+﻿Time Series Analysis Fundamentals Guide
+https://gemini.google.com/app/cbc3cdd981c8826d
+
+
+User prompt: Hi. I want to conduct a research for my pet-project - Time Series Analysis of air raid alerts in Ukraine. First of all I want to collect theoretical info that might be helpful for me. Right now tell me about time series overall, include all details possible. After I get the basics I will think about my specific problem
+Response: Time series analysis models data points collected sequentially over time t∈T. Unlike standard statistical modeling, time series data violates the Independent and Identically Distributed (i.i.d.) assumption due to serial dependencies across observations.
+Data structures fall into two main representations:
+* Regular Time Series: Sampled at uniform intervals Δt (e.g., hourly aggregation, daily sum).
+* Irregular / Point Process Data: Events occur at arbitrary timestamps t1​,t2​,…,tn​. Analysis focuses on inter-arrival times τi​=ti​−ti−1​, event counts in time windows, or continuous intensity estimation.
+1. Time Series Decomposition
+A time series yt​ can be factorized into four primary component processes:
+1. Additive Model: Used when seasonal/cyclical variations remain constant regardless of the trend magnitude.
+yt​=Tt​+St​+Ct​+ϵt​
+2. Multiplicative Model: Used when the amplitude of variations scales proportionally with the trend.
+yt​=Tt​⋅St​⋅Ct​⋅ϵt​
+Components
+   * Trend (Tt​): Long-term directional movement (upward, downward, or neutral) over the entire timeframe.
+   * Seasonality (St​): Patterns repeating at fixed, deterministic calendar frequencies (e.g., daily hour-of-day, weekly day-of-week).
+   * Cyclicality (Ct​): Non-periodic, longer-term fluctuations driven by macro-factors without a fixed structural length.
+   * Residual / Noise (ϵt​): Irreducible random variation remaining after removing structured components.
+Decomposition Methods
+   * Classical Decomposition: Uses centered moving averages for trend estimation and average ratios for seasonal indexing.
+   * STL (Seasonal-Trend Decomposition using Loess): Non-parametric method using locally weighted regression. Handles flexible seasonal changes and is robust against outliers.
+2. Stationarity and Transformations
+Stationarity requires that the statistical properties of the series remain constant over time.
+Weak (Second-Order) Stationarity
+A time series yt​ is weakly stationary if it satisfies three criteria:
+   1. Constant Mean: E[yt​]=μ for all t.
+   2. Constant Variance: Var(yt​)=σ2<∞ for all t.
+   3. Time-Invariant Autocovariance: Cov(yt​,yt−k​)=γ(k), depending strictly on lag distance k, not time t.
+Strict Stationarity
+The joint probability distribution of any sequence (yt1​​,…,ytk​​) is identical to the shifted sequence (yt1​+h​,…,ytk​+h​) for any time shift h.
+Diagnostic Tests
+   * Augmented Dickey-Fuller (ADF) Test: Tests H0​: Unit root present (non-stationary) vs. H1​: Stationary.
+   * KPSS Test: Tests H0​: Trend/Level stationary vs. H1​: Unit root present.
+   * Dual Testing Strategy: Confirmed stationarity occurs when ADF rejects H0​ and KPSS fails to reject H0​.
+Stationary Transformations
+   * First-Order Differencing: Δyt​=yt​−yt−1​ removes linear trends.
+   * Seasonal Differencing: Δs​yt​=yt​−yt−s​ eliminates repeating period-s seasonal effects.
+   * Variance Stabilization: Logarithmic transform ln(yt​) or Box-Cox transformation λytλ​−1​ stabilizes changing variance (heteroscedasticity).
+3. Autocorrelation Analysis
+Dependency metrics across time lags govern the structural configuration of parametric models.
+   * Autocovariance Function:
+γ(k)=E[(yt​−μ)(yt−k​−μ)]
+   * Autocorrelation Function (ACF):
+ρk​=γ(0)γ(k)​∈[−1,1]
+Measures linear dependency between yt​ and yt−k​, including intermediate lag influences.
+   * Partial Autocorrelation Function (PACF): Measures direct correlation between yt​ and yt−k​ after partialing out linear correlations of intermediate lags (yt−1​,…,yt−k+1​).
+
+
+Model Specification
+	ACF Profile
+	PACF Profile
+	AR(p)
+	Exponential decay or sinusoidal damping
+	Cuts off abruptly after lag p
+	MA(q)
+	Cuts off abruptly after lag q
+	Exponential decay or sinusoidal damping
+	ARMA(p,q)
+	Exponential decay after lag q
+	Exponential decay after lag p
+	4. Parametric Time Series Models
+Autoregressive Model: AR(p)
+Expresses yt​ as a linear combination of its p past values:
+yt​=c+i=1∑p​ϕi​yt−i​+ϵt​
+Moving Average Model: MA(q)
+Expresses yt​ as a linear combination of q past white noise residual shocks:
+yt​=μ+ϵt​+j=1∑q​θj​ϵt−j​
+Autoregressive Integrated Moving Average: ARIMA(p,d,q)
+Combines AR and MA modeling after applying d-th order differencing to achieve stationarity:
+(1−i=1∑p​ϕi​Li)(1−L)dyt​=c+(1+j=1∑q​θj​Lj)ϵt​
+where L is the backshift operator (Lkyt​=yt−k​).
+Seasonal ARIMA: SARIMA(p,d,q) × (P,D,Q)s​
+Extends ARIMA by adding seasonal autoregressive (P), differencing (D), and moving average (Q) terms with seasonal period length s.
+Multivariate Frameworks
+      * VAR (Vector Autoregression): Models dynamic interactions between vector components Yt​=[y1,t​,y2,t​,…,ym,t​]T.
+      * ARIMAX / Dynamic Regression: Adds external covariates Xt​ directly to the ARIMA mathematical formulation.
+5. Event-Based Time Series & Point Processes
+When modeling discrete events rather than continuous metrics, stochastic point processes and structural boundary methods apply:
+1. Temporal Point Processes
+Events are represented as timestamp sequences T={t1​,t2​,…,tn​}. The process is characterized by its conditional intensity function λ(t∣Ht​), representing the instantaneous event rate at time t given past history Ht​:
+λ(t∣Ht​)=Δt→0lim​ΔtP(Event in [t,t+Δt]∣Ht​)​
+2. Hawkes Process (Self-Exciting Point Process)
+Models cluster-based event patterns where an initial event elevates the probability of subsequent events over a localized time horizon:
+λ(t)=μ(t)+ti​<t∑​αγ(t−ti​)
+where μ(t) is baseline intensity, α is excitation scale, and γ(Δt)=e−βΔt represents exponential memory decay.
+3. Change-Point Detection
+Identifies non-stationary structural shifts in distribution, mean rate, or variance across time bounds:
+      * Algorithms: Pruned Exact Linear Time (PELT), Binary Segmentation, Bayesian Change-Point Analysis (BCPA).
+4. Duration & Hazard Modeling
+Analyzes interval length Di​=tend,i​−tstart,i​ using survival analysis metrics:
+      * Hazard Function h(t): Instantaneous termination rate given survival up to duration t.
+      * Formulations: Weibull parametric regression, Cox Proportional Hazards model.
+6. Machine Learning & Deep Learning Frameworks
+      * Feature Engineering: Lagged target values (yt−1​,yt−24​), rolling stats (window mean, window standard deviation), cyclical encodings (sin/cos transformations of time components).
+      * Gradient Boosted Decision Trees: XGBoost, LightGBM, CatBoost using temporally ordered splitting or Purged Group Time-Series Validation.
+      * Recurrent Architectures: LSTM, GRU for temporal sequential dependency tracking.
+      * Modern Time Series Deep Learning:
+      * Temporal Fusion Transformer (TFT): Multi-horizon architecture designed for static metadata, past observed inputs, and known future features.
+      * N-BEATS / N-HiTS: Fully connected neural architectures utilizing basis function expansion for exact trend and seasonal breakdown.
+      * PatchTST: Channel-independent Transformer architecture using temporal sub-sequence patching.
+Which specific data format do you plan to work with first (e.g., raw start/end event timestamps, hourly/daily aggregated counts, or duration intervals)?
+Sources
+      1. Time Series Analysis: Forecasting, Components and Methods
+      2. Time Series Analysis Fundamentals | PDF - Scribd
+      3. “Mastering Time Series: Understanding Stationarity, Variance, and
+________________
+
+
+User prompt: great, prepare this report in md format now. Also add relevant links where I can read about it
+Response: I will now generate the comprehensive theoretical report on Time Series Analysis as a Markdown document, including references and links to standard textbooks, documentation, and foundational papers.
+I have generated the file time_series_analysis_guide.md containing the full theory breakdown, formatted equations, structural sections, and curated learning resources/links.
+Let me know if you would like to move on to structuring your specific dataset or defining target problems for your project!
+________________
+
+
+User prompt: and which approach would you recommend for my specific problems? Describe pros and cons of them
+Response: Because air raid alert data consists of discrete time intervals with start and end timestamps across multiple regions, standard continuous time series forecasting models like ARIMA or Prophet are usually a poor fit. The data is inherently spatio-temporal point event data marked by duration and spatial propagation.
+The optimal approach depends on the core question you want to answer.
+Question 1: "An alert just started in my region—how long will it last?"
+Recommended Approach: Survival / Duration Analysis (Cox Proportional Hazards, Weibull AFT)
+Rather than forecasting values on a fixed grid, duration analysis models the probability density function of time-to-event completion (alert termination).
+      * Pros:
+      * Built for Duration: Explicitly models hazard rates h(t)—answering questions like "Given an alert has already lasted 45 minutes, what is the probability it ends in the next 15 minutes?"
+      * Handles Censoring: Gracefully handles alerts that are currently active when you pull the data.
+      * High Interpretability: Features like alert type (if available), time of day, region, or concurrent alerts in neighboring oblasts yield clear proportional hazard ratios.
+      * Cons:
+      * Single-Task Focus: Only models duration once an alert is triggered; it does not predict when the next alert will occur.
+      * Regime Sensitivity: Alerts caused by short ballistic missile threats (15–30 mins) follow fundamentally different distribution shapes than long Shahed drone waves (3–6 hours) or nationwide MiG-31K takeoffs (20–40 mins). Clustering alert types first is often required.
+Question 2: "Will an alert happen in Region X in the next 1–3 hours based on current activity?"
+Recommended Approach: Spatio-Temporal Hawkes Processes (Self-Exciting Point Processes)
+Air raid alerts display strong self-excitation (a wave of strikes excites multiple alerts in sequence) and spatial diffusion (alerts often travel along flight corridors from eastern/southern border regions toward central/western regions).
+      * Pros:
+      * Continuous Time Precision: Works directly with exact microsecond timestamps rather than forcing data into artificial hourly or daily time bins.
+      * Models Excitation & Cascades: Quantifies both baseline risk μ(t) (background threat level) and background-to-region excitation αe−βΔt (how an alert in Kharkiv or Sumy increases short-term risk in Kyiv or Poltava).
+      * Mathematically Rigorous: Provides strong theoretical insights into spatial dynamics and threat propagation patterns.
+      * Cons:
+      * Math & Implementation Complexity: Estimating multi-dimensional spatio-temporal Hawkes parameters requires specialized libraries (e.g., tick or ptpack in Python).
+      * Limited Feature Integration: Harder to inject heterogeneous tabular features (like weather or calendar features) compared to machine learning trees.
+Question 3: "Can I build a real-time prediction model for alert probabilities across all regions?"
+Recommended Approach: Discretized Windowing + Gradient Boosted Trees (XGBoost / LightGBM / CatBoost)
+If your goal is an end-to-end predictive pipeline, convert the timeline into uniform time slices (e.g., 15-minute interval bins) and transform the problem into tabular binary classification or multi-label classification across regions.
+      * Pros:
+      * Feature Engineering Flexibility: Easily engineer rich contextual features: status of adjacent regions in the last k minutes, rolling alert count in the past N hours, rolling average duration, time-of-day cyclical features, and inter-region lag correlations.
+      * State-of-the-Art Tabular Performance: GBDTs handle non-linear interactions, regime shifts, and missing attributes far better than deep learning or linear models on tabular feature sets.
+      * Production Ready: Simple to deploy as a real-time REST API or automated dashboard.
+      * Cons:
+      * Information Loss from Binning: Aggregating continuous timestamps into discrete 15-minute or 1-hour intervals sacrifices precision.
+      * Class Imbalance: In quieter regions or periods, active alert bins are rare relative to non-alert bins, requiring targeted loss functions or resampling strategies.
+Question 4: "How do regional dependencies interact across the entire national network?"
+Recommended Approach: Spatio-Temporal Graph Neural Networks (ST-GNNs / Spatial-Temporal Transformers)
+Model Ukraine’s administrative regions as nodes in a graph, with edges representing shared borders or known flight vector paths.
+      * Pros:
+      * Native Spatial Awareness: Directly encodes physical geographic adjacency matrices Aij​ alongside temporal sequences.
+      * Multi-Region Coordination: Predicts simultaneous multi-region alert probabilities simultaneously.
+      * Cons:
+      * High Complexity & Data Requirements: Substantially harder to train, debug, and tune than tree models.
+      * Black Box Nature: Harder to interpret structural triggers compared to point processes or hazard models.
+Suggested Project Roadmap
+      1. Phase 1 (EDA & Survival Analysis): Fit Survival Curves (Kaplan-Meier & Cox AFT) on alert durations grouped by region and time of day. This yields immediate practical insights into alert duration distributions.
+      2. Phase 2 (Dynamic Modeling): Reframe the raw event logs into 15-minute time steps. Engineer spatial lag features (e.g., "number_of_active_alerts_in_neighboring_regions") and train a LightGBM classifier to predict alert initiation in the next window.
+      3. Phase 3 (Advanced Exploration): If spatial propagation dynamics interest you most, fit a Hawkes Process to map cross-regional excitation intensity.
+What specific primary goal do you want to start with—predicting alert duration, forecasting alert occurrences, or analyzing spatial propagation across regions?
+________________
+
+
+User prompt: okay right, lets start with outlining possible functionality in the scope of the task and then decide what model we would need. Please list me ideas for Time Series Analysis of air raid alerts in Ukraine.
+Response: 1. Real-Time Alert Duration & Expiration Predictor
+      * Objective: Given an alert that was just triggered (or has been active for t minutes) in a given region, predict the remaining duration distribution and the probability that it ends in the next 15,30,or 60 minutes.
+      * Input Data: Elapsed time t, time of day, day of week, region ID, active alert status of all neighboring regions, historical median duration for that region in the past N days.
+      * Recommended Models:
+      * Accelerated Failure Time (AFT) / Cox Proportional Hazards: Best for survival probabilities P(T>t+Δt∣T>t) without forcing fixed binning.
+      * Random Survival Forests (RSF): Handles non-linear feature interactions between regional statuses better than linear Cox models.
+2. Spatial Wave Propagation & Regional Cascade Warning
+      * Objective: Predict if an alert active in frontline or border regions (e.g., Sumy, Kharkiv, Zaporizhzhia) will propagate into central or western regions (e.g., Poltava, Kyiv, Lviv) within the next 15 to 60 minutes.
+      * Input Data: Adjacency matrix of Ukrainian regions A∈RN×N, continuous timestamps of regional trigger events, recent flight corridor trajectories, active alert count in boundary clusters.
+      * Recommended Models:
+      * Multi-Dimensional Spatio-Temporal Hawkes Process: Models self-excitation (α) and spatial decay (β) to calculate instantaneous hazard intensity λi​(t) across regions.
+      * Spatio-Temporal Graph Neural Network (ST-GNN / A3T-GCN): Maps regional relations as graph nodes and captures dynamic spatial dependencies over moving temporal windows.
+3. Latent Threat Type Unsupervised Profiling
+      * Objective: Raw historical alert logs rarely label the underlying cause (e.g., Shahed drone wave vs. MiG-31K takeoff vs. S-300 / ballistic launch vs. tactical aviation). Group historical alerts into distinct, unlabelled clusters based on spatial footprints and temporal characteristics.
+      * Input Data: Simultaneous active region count, total duration, spatial footprint spread rate (regions/minute), start time distribution.
+      * Recommended Models:
+      * Time-Series Clustering with Dynamic Time Warping (DTW) + HDBSCAN: Groups multi-region activation sequences regardless of minor phase shifts.
+      * Gaussian Mixture Models (GMM) / K-Means: Clusters engineered geometric features (e.g., max concurrent regions, lifetime, regional center of mass movement).
+4. Binned Short-Term Alert Probability Forecasting
+      * Objective: Predict whether an alert will occur in a given region during discrete forward windows (e.g., t∈[T+0,T+1h], [T+1h,T+3h]).
+      * Input Data: Binned hourly time series (yi,t​∈{0,1}), rolling 24h/7d alert density, cross-region lag correlations, calendar/cyclical features (sin/cos encoding of hour/day).
+      * Recommended Models:
+      * LightGBM / CatBoost: The most practical benchmark for discretized tabular time-series classification with spatial lag features.
+      * Temporal Fusion Transformer (TFT): Handles multi-horizon probability forecasting while natively capturing static regional metadata alongside time-varying inputs.
+5. Tactical Shift & Anomaly Change-Point Detection
+      * Objective: Detect macro-level changes in attack strategies, tactic shifts (e.g., transition from night drone strikes to morning missile waves), or operational pauses over weeks and months.
+      * Input Data: Daily aggregated total alert duration per region, daily alert frequency counts, regional correlation matrices over rolling 30-day windows.
+      * Recommended Models:
+      * Pruned Exact Linear Time (PELT) / Bayesian Change-Point Analysis (BCPA): Pinpoints exact structural break-dates in time-series mean/variance.
+      * STL Decomposition + Isolation Forests: Isolates structural trend/seasonal shifts and identifies anomalous alert spikes relative to baseline activity.
+Model Selection Summary Matrix
+
+
+Functionality Idea
+	Primary Model Family
+	Key Metric / Output
+	Primary Advantage
+	Duration Estimator
+	Survival Analysis (AFT / RSF)
+	Conditional Hazard Rate h(t)
+	Handles active/censored alerts cleanly
+	Cascade Warning
+	Hawkes Processes / ST-GNN
+	Conditional Intensity λi​(t)
+	Directly models spatial propagation dynamics
+	Threat Profiling
+	DTW + HDBSCAN / GMM
+	Discrete Cluster ID
+	Reveals hidden tactical threat types
+	Short-Term Probability
+	LightGBM / TFT
+	Binary Class Probability p∈[0,1]
+	Highly accurate for tabular time-step grids
+	Tactical Shift Detection
+	PELT / BCPA
+	Timestamp of Structural Change
+	Identifies systemic changes in activity
+	Which functional module do you want to start building first?
+________________
+
+
+User prompt: okay I found a dataset that is updated daily https://github.com/Vadimkin/ukrainian-air-raid-sirens-dataset/blob/main/datasets/official_data_uk.csv. I want to start with the most straightforward option - Real-Time Alert Duration & Expiration Predictor. Please outline me a plan for implementation of a simple app and its functionality: display map of Ukraine, show what regions are with air alert right now, and the ability to see when is predicted end of the air alert and predicted start of air alert for specific region. Include what models and approaches are the best for the use case. Note that everything should be on python and I want to create a pretty visuals as well
+Response: http://googleusercontent.com/map_content/0
+Building an interactive dashboard and real-time predictor for air raid alerts in Ukraine using Python is a great approach.
+Below is an architecture plan covering the recommended statistical models, tech stack, dashboard features, visual design, and a starter Python code blueprint.
+1. Modelling Strategy & Theoretical Approach
+Because air raid alert data consists of discrete start and end event logs across geographical regions, standard continuous time-series regression (e.g., ARIMA) is not suitable. You need two distinct models to answer the two core prediction questions:
+A. Active Alert Expiration (Predicted End Time)
+      * Goal: Given an alert that started telapsed​ minutes ago in region i, estimate the remaining duration Δtremaining​.
+      * Recommended Model: Quantile Gradient Boosted Trees (LightGBM) & Survival Analysis (Weibull AFT)
+      * Quantile LightGBM (objective='quantile'): Train three quantile regressors for α∈{0.10,0.50,0.90}. Instead of predicting a single point estimate (e.g., "Ends in 22 minutes"), this outputs a probabilistic interval (e.g., "Median: 22 min remaining; 80% confidence interval: 12 to 45 min").
+      * Key Features to Engineer:
+      * elapsed_minutes: Current time minus alert start time (the most critical feature).
+      * active_neighbors_count: Number of adjacent oblasts currently under alert.
+      * total_active_nationwide: Total active alerts in Ukraine at this moment.
+      * cyclical_time: sin/cos transformation of hour of day and day of week.
+      * historical_region_median: Rolling median duration for that specific region over the past 14 days.
+B. Upcoming Alert Start (Predicted Start Time / Risk Level)
+      * Goal: Given that a region is currently quiet, estimate the probability P(Alert Starts in Next 30–60 mins).
+      * Recommended Model: Spatio-Temporal Inter-Arrival / Binary Classification Model
+      * LightGBM Classifier on Time-Grid Bins: Discretize regional timelines into 15-minute windows. Predict binary status yi,t+1​∈{0,1}.
+      * Key Features to Engineer:
+      * neighbor_trigger_lag: Minutes since an alert started in an adjacent border region (e.g., if an alert starts in Sumy, the risk score for Kyiv or Poltava increases).
+      * region_quiet_duration: Minutes elapsed since the last alert ended in this region.
+      * wave_excitation_score: Number of new alerts triggered nationwide in the past 30 minutes.
+2. Python Tech Stack & Visual Design
+To keep everything in pure Python while achieving modern, modern aesthetics:
+
+
+Layer
+	Tool / Library
+	Purpose
+	Web UI Framework
+	Streamlit (or Dash)
+	Rapid reactive dashboard creation, custom sidebar controls, auto-refreshing UI.
+	3D / Choropleth Map
+	Pydeck (Deck.gl for Python)
+	Hardware-accelerated, high-fps map rendering with custom color layers and hover tooltips.
+	Data Processing
+	Pandas + GeoPandas
+	Joining event logs with GeoJSON regional boundary shapes.
+	Predictive Engine
+	LightGBM / lifelines
+	Quantile duration prediction and survival curve calculation.
+	Charts & Metrics
+	Plotly Express
+	Interactive regional history histograms and survival curves.
+	Visual Design Rules for Map Rendering
+      * Dark Theme Canvas: Dark basemap (CartoDB Dark Matter / Mapbox Dark) highlights active regions cleanly.
+      * Color Coding:
+      * 🔴 Crimson / Red (#FF2B2B): Currently active alert. Hover displays predicted remaining time interval.
+      * 🟠 Amber / Orange (#FF9F00): Region inactive, but high predicted start probability in next 60 mins (>50%).
+      * 🟢 Dark Emerald / Green (#00C853): Region inactive, low short-term threat.
+3. End-to-End System Architecture
+                   ┌────────────────────────────────────────┐
+                  │  Dataset CSV (Official Siren Logs)     │
+                  └───────────────────┬────────────────────┘
+                                      │
+                                      ▼
+                  ┌────────────────────────────────────────┐
+                  │   Data Processing & Feature Pipeline   │
+                  │  - Compute spatial lag features        │
+                  │  - Merge GeoJSON boundary polygons     │
+                  └───────────────────┬────────────────────┘
+                                      │
+                   ┌──────────────────┴──────────────────┐
+                   ▼                                     ▼
+     ┌───────────────────────────┐         ┌───────────────────────────┐
+     │ Quantile LightGBM Model   │         │ LightGBM Classifier Model │
+     │ (Remaining Duration Engine)│        │ (Start Risk Score Engine) │
+     └─────────────┬─────────────┘         └─────────────┬─────────────┘
+                   │                                     │
+                   └──────────────────┬──────────────────┘
+                                      ▼
+                  ┌────────────────────────────────────────┐
+                  │      Streamlit + Pydeck Dashboard      │
+                  │  - Interactive Map of Ukraine          │
+                  │  - Live Region Risk Inspector          │
+                  │  - Predicted End / Start Times         │
+                  └────────────────────────────────────────┘
+
+4. Starter Implementation Code
+Below is a complete starter template demonstrating data preprocessing, quantile prediction logic, and Pydeck map visual rendering using Streamlit.
+Prerequisites
+Install required dependencies:
+pip install streamlit pandas geopandas pydeck lightgbm plotly scikit-learn
+
+Python Script (app.py)
+import streamlit as st
+import pandas as pd
+import numpy as np
+import pydeck as pdk
+import plotly.express as px
+from datetime import datetime, timedelta
+
+# ------------------------------------------------------------------------------
+# 1. Page Configuration & Custom CSS
+# ------------------------------------------------------------------------------
+st.set_page_config(
+   page_title="Ukraine Air Raid Alert Predictor",
+   page_icon="🚨",
+   layout="wide",
+   initial_sidebar_state="expanded"
+)
+
+st.markdown("""
+<style>
+   .main { background-color: #0E1117; }
+   .metric-card {
+       background-color: #1E222D;
+       padding: 15px;
+       border-radius: 8px;
+       border: 1px solid #2E3440;
+   }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("🚨 Ukraine Air Raid Alert Real-Time & Predictive Analysis")
+st.caption("Machine Learning duration & expiration forecast based on spatial-temporal event patterns.")
+
+# ------------------------------------------------------------------------------
+# 2. Mock Data Generator / Pipeline Loader
+# (Replace mock data with actual data loading from official_data_uk.csv)
+# ------------------------------------------------------------------------------
+@st.cache_data
+def load_region_boundaries():
+   # Coordinates of key regional capitals for Pydeck visual centroids
+   regions_data = [
+       {"region": "Kyiv", "lat": 50.4501, "lon": 30.5234, "status": "Active", "elapsed_min": 42},
+       {"region": "Kharkiv", "lat": 49.9935, "lon": 36.2304, "status": "Active", "elapsed_min": 85},
+       {"region": "Lviv", "lat": 49.83826, "lon": 24.02324, "status": "Inactive", "elapsed_min": 0},
+       {"region": "Odesa", "lat": 46.4825, "lon": 30.7233, "status": "Inactive", "elapsed_min": 0},
+       {"region": "Dnipro", "lat": 48.4647, "lon": 35.0462, "status": "Active", "elapsed_min": 15},
+       {"region": "Zaporizhzhia", "lat": 47.8388, "lon": 35.1396, "status": "Inactive", "elapsed_min": 0},
+       {"region": "Sumy", "lat": 50.9077, "lon": 34.7981, "status": "Active", "elapsed_min": 110},
+   ]
+   return pd.DataFrame(regions_data)
+
+df_regions = load_region_boundaries()
+
+# ------------------------------------------------------------------------------
+# 3. Model Prediction Engine (Quantile Duration Estimates)
+# ------------------------------------------------------------------------------
+def predict_remaining_duration(elapsed_minutes, region_name):
+   """
+   Placeholder logic for Quantile LightGBM Regressor.
+   In production, call model.predict() trained on historical official_data_uk.csv.
+   """
+   # Baseline expected median total duration ~ 45-60 mins depending on region
+   base_total = 60 if region_name in ["Kharkiv", "Sumy"] else 40
+   
+   if elapsed_minutes >= base_total:
+       pred_median_remaining = 15
+       pred_lower_remaining = 5
+       pred_upper_remaining = 35
+   else:
+       pred_median_remaining = max(5, base_total - elapsed_minutes)
+       pred_lower_remaining = max(2, int(pred_median_remaining * 0.5))
+       pred_upper_remaining = int(pred_median_remaining * 1.8)
+       
+   return pred_lower_remaining, pred_median_remaining, pred_upper_remaining
+
+def predict_start_risk(region_name, active_count):
+   """
+   Placeholder logic for Start Probability Classifier.
+   """
+   if region_name in ["Zaporizhzhia", "Odesa"] and active_count > 2:
+       return 0.68  # 68% chance of alert starting in next 45 mins
+   return 0.12
+
+# Apply predictions
+now = datetime.now()
+df_regions["pred_end_min"] = 0
+df_regions["pred_end_time"] = "N/A"
+df_regions["risk_score"] = 0.0
+
+for idx, row in df_regions.iterrows():
+   if row["status"] == "Active":
+       low, med, high = predict_remaining_duration(row["elapsed_min"], row["region"])
+       df_regions.at[idx, "pred_end_min"] = med
+       est_end = now + timedelta(minutes=med)
+       df_regions.at[idx, "pred_end_time"] = f"{est_end.strftime('%H:%M')} (±{med-low}m)"
+       df_regions.at[idx, "color"] = [255, 43, 43, 200]  # Red
+   else:
+       risk = predict_start_risk(row["region"], (df_regions["status"] == "Active").sum())
+       df_regions.at[idx, "risk_score"] = risk
+       if risk > 0.5:
+           df_regions.at[idx, "color"] = [255, 159, 0, 200]  # Amber (High Risk)
+       else:
+           df_regions.at[idx, "color"] = [0, 200, 83, 160]   # Green (Quiet)
+
+# ------------------------------------------------------------------------------
+# 4. Top Metrics Bar
+# ------------------------------------------------------------------------------
+col1, col2, col3, col4 = st.columns(4)
+active_count = (df_regions["status"] == "Active").sum()
+col1.metric("Active Alerts", f"{active_count} Regions", delta_color="inverse")
+col2.metric("Quiet Regions", f"{len(df_regions) - active_count} Regions")
+col3.metric("Highest Threat Zone", "Sumy / Kharkiv")
+col4.metric("National Risk Index", "Elevated (Moderate Wave)")
+
+# ------------------------------------------------------------------------------
+# 5. Interactive Map Display (Pydeck)
+# ------------------------------------------------------------------------------
+st.subheader("Current Status & Expiration Heatmap")
+
+# Define Deck.gl visual layer
+layer = pdk.Layer(
+   "ScatterplotLayer",
+   data=df_regions,
+   get_position=["lon", "lat"],
+   get_color="color",
+   get_radius=35000,
+   pickable=True,
+   auto_highlight=True,
+)
+
+# Tooltip specification
+tooltip = {
+   "html": "<b>Region:</b> {region}<br/>"
+           "<b>Status:</b> {status}<br/>"
+           "<b>Active Elapsed Time:</b> {elapsed_min} mins<br/>"
+           "<b>Predicted End:</b> {pred_end_time}<br/>"
+           "<b>Next 60m Start Probability:</b> {risk_score:.0%}",
+   "style": {"backgroundColor": "#1E222D", "color": "white", "fontSize": "13px"}
+}
+
+# Initial view centered over Ukraine
+view_state = pdk.ViewState(
+   latitude=48.3794,
+   longitude=31.1656,
+   zoom=5.5,
+   pitch=25,
+)
+
+r = pdk.Deck(
+   layers=[layer],
+   initial_view_state=view_state,
+   map_style="mapbox://styles/mapbox/dark-v10",
+   tooltip=tooltip
+)
+
+st.pydeck_chart(r)
+
+# ------------------------------------------------------------------------------
+# 6. Region Detailed Inspector
+# ------------------------------------------------------------------------------
+st.markdown("---")
+st.subheader("Region Detail Inspector & Predicted Breakdown")
+
+selected_region = st.selectbox("Select a region to inspect:", df_regions["region"].unique())
+reg_info = df_regions[df_regions["region"] == selected_region].iloc[0]
+
+col_left, col_right = st.columns([1, 2])
+
+with col_left:
+   st.markdown(f"### {selected_region}")
+   st.write(f"**Current Status:** {reg_info['status']}")
+   if reg_info["status"] == "Active":
+       st.write(f"**Elapsed Duration:** {reg_info['elapsed_min']} minutes")
+       st.write(f"**Predicted End Time:** {reg_info['pred_end_time']}")
+       st.info(f"Model projects a 50% probability that the alert finishes in ~{reg_info['pred_end_min']} minutes.")
+   else:
+       st.write(f"**Current Status:** Clear")
+       st.write(f"**Short-term Alert Risk:** {reg_info['risk_score']:.0%}")
+       if reg_info['risk_score'] > 0.5:
+           st.warning(" elevated risk of incoming alert wave due to adjacent activity.")
+
+with col_right:
+   # Example historical alert distribution plot for selected region
+   st.markdown("**Historical Duration Distribution for this Region (Minutes)**")
+   sample_durations = np.random.gamma(shape=2.5, scale=18, size=300)
+   fig = px.histogram(
+       sample_durations, 
+       nbins=30, 
+       labels={'value': 'Duration (minutes)'},
+       color_discrete_sequence=['#FF2B2B' if reg_info['status'] == 'Active' else '#00C853']
+   )
+   fig.update_layout(
+       margin=dict(l=20, r=20, t=20, b=20),
+       paper_bgcolor='rgba(0,0,0,0)',
+       plot_bgcolor='rgba(0,0,0,0)',
+       font=dict(color="white")
+   )
+   st.plotly_chart(fig, use_container_width=True)
+
+5. Development Roadmap & Next Steps
+      1. Phase 1: Dataset Feature Extraction (official_data_uk.csv)
+      * Parse start and end timestamps into UTC datetime.
+      * Compute duration_minutes = (end - start).dt.total_seconds() / 60.
+      * Filter out data quality anomalies (e.g., test alerts lasting < 1 minute).
+      2. Phase 2: Train Quantile LightGBM
+      * Split data by time (e.g., train on first 80% chronologically, test on last 20% to prevent leakage).
+      * Fit LightGBMRegressor(objective='quantile', alpha=0.5) for median duration.
+      3. Phase 3: GeoJSON Polygons Integration
+      * Download ukraine_oblast.geojson from GitHub.
+      * Upgrade Pydeck from point scatterplots (ScatterplotLayer) to region polygons (GeoJsonLayer) so entire oblast shapes light up dynamically.
+________________
+
+
+User prompt: read the plan and give me links to sources of data I can use for the project
+Response: Here are the direct sources and links organized by category to execute the project:
+1. Historical Alert Datasets
+      * Vadimkin’s Ukrainian Air Raid Sirens Dataset[cite: 1]
+      * Repository: GitHub - Vadimkin/ukrainian-air-raid-sirens-dataset
+      * Direct Dataset File: official_data_uk.csv
+2. Live Status APIs
+      * alerts.in.ua API (Primary source for real-time polling)[cite: 1]
+      * Developer Documentation: devs.alerts.in.ua
+      * Main Portal (Token Request): alerts.in.ua
+      * UkraineAlarm API (Official Ajax / Ministry of Digital Transformation API)
+      * API Portal: api.ukrainealarm.com
+      * Python Client Library: GitHub - UkraineAlarm-python
+3. Geographical Maps & GeoJSON
+      * geoBoundaries (ADM1 - Oblasts)[cite: 1]
+      * Direct GeoJSON Download: geoBoundaries-UKR-ADM1.geojson
+      * Humanitarian Data Exchange (HDX) Page: HDX Ukraine Administrative Boundaries
+      * Community GeoJSON Repositories[cite: 1]
+      * EugeneBorshch Ukraine GeoJSON: GitHub - ukraine_geojson
+4. Contextual Data APIs (Weather & Environment)
+      * Open-Meteo Weather API (Historical weather & forecasts for drone/wind analysis)[cite: 1]
+      * Website & Docs: open-meteo.com
+      * Sunrise / Sunset & Astronomical Data[cite: 1]
+      * SunCalc Python: PyPI - suncalc
+________________
