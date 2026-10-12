@@ -6581,3 +6581,1077 @@ df_retry.to_parquet('/tmp/retry_episodes.parquet')
 
   Everything — train.py's saved model, the live app, and all three notebooks —
   now reflects the same corrected, bias-fixed dataset.
+
+❯ <ide_opened_file>The user opened the file
+  /Users/allakovalcuk/Agentic_AI/docs/ai_usage_notice.md in the IDE. This may
+  or may not be related to the current task.</ide_opened_file>
+
+❯ Please also do explicit leakage unit test as it states in PLAN.md. I know
+  that there is no data. leakage but just to be sure. You may als add other
+  unit tests to cover important functions. Don't forget about AAA rules
+
+  Read 2 files, listed 2 directories, ran 2 shell commands (ctrl+o to expand)
+
+⏺ Now let's check data/rollup.py and models/baseline.py final states.
+
+  Read 2 files (ctrl+o to expand)
+
+⏺ Let's set up pytest, then write the test suite — starting with the explicit
+  leakage tests as the priority.
+
+⏺ Update(requirements.txt)
+  ⎿  Added 1 line
+      13  streamlit>=1.30.0
+      14  plotly>=5.18.0
+      15  python-dotenv>=1.0.0
+      16 +pytest>=7.4.0                                                  
+
+⏺ Write(pytest.ini)
+  ⎿  Wrote 3 lines to pytest.ini
+      1 [pytest]
+      2 pythonpath = src
+      3 testpaths = tests
+
+⏺ Write(tests/test_leakage.py)
+  ⎿  Wrote 223 lines to tests/test_leakage.py
+       1 """Explicit data-leakage tests (PLAN.md Section 4.3: "Build feat
+       2 explicit as_of_ts and test this with unit tests (e.g. shift chec
+         k)").
+       4 The core technique throughout is a *shift check*: build a featur
+       5 as_of_ts, then take the exact same input and shift one event fro
+         m the past
+         ge-safe
+       7 feature must change only when the shifted event crosses into the
+       8 must be completely blind to anything still in the future.
+      10 import pandas as pd
+     … +270 lines (ctrl+o to expand)
+
+⏺ Let's run this first batch before writing more, to catch issues early.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ All leakage tests pass. Now let's write the rollup tests, including a
+  regression test for the corrupt-record bug we just fixed.
+
+⏺ Write(tests/test_rollup.py)
+  ⎿  Wrote 157 lines to tests/test_rollup.py
+      1 """Tests for data.rollup.merge_intervals_to_episodes - the interv
+        al-merge
+      2 logic that rolls raion/hromada alerts up to oblast-level episodes
+        ."""
+      3 import pandas as pd
+      5 from alertpred.data.rollup import merge_intervals_to_episodes
+      6
+      7
+      8 def _ts(s: str) -> pd.Timestamp:
+      9     return pd.Timestamp(s, tz="UTC")
+     … +185 lines (ctrl+o to expand)
+
+⏺ Now let's write the cleaning tests.
+
+⏺ Write(tests/test_cleaning.py)
+  ⎿  Wrote 107 lines to tests/test_cleaning.py
+      1 """Tests for data.cleaning: oblast name mapping, gap-episode cons
+        truction,
+      2 and the chronological train/test split."""
+      3 import pandas as pd
+      4
+        pisodes, create_time_split
+      6
+      7
+      8 def _ts(s: str) -> pd.Timestamp:
+      9     return pd.Timestamp(s, tz="UTC")
+     … +113 lines (ctrl+o to expand)
+
+⏺ Write(tests/test_features.py)  ⎿  Wrote 144 lines to tests/test_features.py
+      1 """Tests for features.builder: recency weighting and as-of sampli
+        ng targets."""
+      2 import pandas as pd
+      3 import pytest
+      4
+      5 from alertpred.features.builder import (
+      6     compute_recency_weight,
+      7     sample_as_of_alert_moments,
+      8     sample_as_of_gap_moments,
+      9 )
+     … +152 lines (ctrl+o to expand)
+
+⏺ Now let's write the baseline model tests.
+
+⏺ Write(tests/test_baseline.py)
+  ⎿  Wrote 116 lines to tests/test_baseline.py
+       1 """Tests for models.baseline: weighted percentile/mean helpers a
+         nd the
+       2 empirical conditional baseline."""
+       3 import numpy as np
+       4 import pandas as pd
+       6
+       7 from alertpred.models.baseline import (
+       8     EmpiricalConditionalBaseline,
+       9     weighted_mean,
+      10     weighted_percentile,
+     … +120 lines (ctrl+o to expand)
+
+⏺ Let's run the full suite now to check everything together.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Let me verify the regression test actually catches the bug (not just trivially
+  passing) by simulating the pre-fix behavior.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Good catch opportunity — let me verify this more rigorously, since my
+  synthetic scenario didn't actually reproduce the chaining mechanism (the
+  records didn't touch). Let me fix the test to faithfully replicate the real
+  bug.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Now it properly reproduces the bug. Let me update the test with this faithful
+  scenario.
+
+⏺ Update(tests/test_rollup.py)
+  ⎿  Added 17 lines, removed 8 lines
+      114      individual records longer than `max_single_record_hours` b
+           efore merging."""
+      115  
+      116      def test_one_corrupt_long_record_does_not_swallow_surround
+           ing_real_episodes(self):
+      117 -        # Arrange: two short, legitimate episodes weeks apart,
+          - plus one                                                     
+      118 -        # corrupt record spanning the entire gap between them 
+          -(a stand-in                                                   
+      119 -        # for the real "never closed" source row).            
+      120 -        real_episode_1 = _rec("2026-01-01 08:00:00", "2026-01-
+          -01 09:00:00")                                                 
+      121 -        corrupt_record = _rec("2026-01-02 00:00:00", "2026-03-
+          -01 00:00:00")  # ~58 days                                     
+      122 -        real_episode_2 = _rec("2026-03-15 08:00:00", "2026-03-
+          -15 09:00:00")                                                 
+      123 -        records = [real_episode_1, corrupt_record, real_episod
+          -e_2]                                                          
+      117 +        # Arrange: a real episode that touches the start of a 
+          +corrupt,                                                      
+      118 +        # never-closed record (so they'd chain under the old b
+          +ehavior), and                                                 
+      119 +        # a second real episode that falls entirely inside the
+          + corrupt                                                      
+      120 +        # record's bogus multi-week span (so it would have bee
+          +n silently                                                    
+      121 +        # absorbed into the chain and lost, never appearing as
+          + its own                                                      
+      122 +        # episode) - this is the exact shape of the real Khark
+          +iv bug.                                                       
+      123 +        touches_corrupt_start = _rec("2026-01-01 08:00:00", "2
+          +026-01-02 00:00:00")                                          
+      124 +        corrupt_record = _rec("2026-01-02 00:00:00", "2026-03-
+          +01 00:00:00")  # ~58 days, never closed                       
+      125 +        swallowed_without_the_fix = _rec("2026-01-20 08:00:00"
+          +, "2026-01-20 09:00:00")                                      
+      126 +        records = [touches_corrupt_start, corrupt_record, swal
+          +lowed_without_the_fix]                                        
+      127  
+      128 +        # Sanity-check the premise: without the guard, these t
+          +hree records                                                  
+      129 +        # really do chain-merge into one ~58-day blob (reprodu
+          +cing the bug)                                                 
+      130 +        unguarded = merge_intervals_to_episodes(records, max_s
+          +ingle_record_hours=1e9)                                       
+      131 +        assert len(unguarded) == 1                            
+      132 +        assert unguarded[0]["duration_min"] > 24 * 60         
+      133 +                                                              
+      134          # Act
+      135          episodes = merge_intervals_to_episodes(records, max_si
+           ngle_record_hours=24.0)
+      136  
+     ...
+      140          assert len(episodes) == 2
+      141          starts = {ep["started_at"] for ep in episodes}
+      142          assert _ts("2026-01-01 08:00:00") in starts
+      134 -        assert _ts("2026-03-15 08:00:00") in starts           
+      143 +        assert _ts("2026-01-20 08:00:00") in starts           
+      144          # none of the surviving episodes should span anywhere 
+           near the corrupt window
+      145          assert all(ep["duration_min"] < 24 * 60 for ep in epis
+           odes)
+      146  
+
+⏺ Let's re-run the full suite to confirm this updated test passes.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ All 45 tests pass. Summary:
+
+  Setup: added pytest to requirements.txt, pytest.ini (so pytest just works from
+  the repo root, no path hacks needed), and a tests/ directory.
+
+  tests/test_leakage.py — the explicit PLAN.md-mandated leakage tests, all using
+  the "shift check" technique it describes: build a feature at a fixed
+  as_of_ts, then move the same event across that boundary and confirm the
+  feature only reacts when the event is in the past.
+  - compute_neighbor_active_features: a neighbor's episode starting after
+    as_of_ts must not register as active; shifting it to start before as_of_ts
+    must flip the feature; an already-ended episode must read as inactive; a
+    region with no neighbors gets 0.0, not NaN.
+  - extract_point_in_time_features: the 6h/24h rolling counts must ignore future
+    alerts and only count past ones for the same region.
+  - sample_as_of_alert_moments: no sampled moment can land at or after the
+    episode's true end.
+  - create_time_split: train is strictly before the cutoff, test is on/after it,
+    and the two partitions reconstruct the original with no overlap or loss.
+
+  tests/test_rollup.py — including a real regression test for the corrupt-record
+  bug from earlier: I didn't just assert the fixed behavior, I verified the
+  premise inline (confirmed the same three records really do chain-merge into
+  one unguarded 58-day blob without the fix, exactly reproducing the real
+  Kharkiv failure mode) before asserting the fix prevents it. Caught and fixed a
+  flaw in my first draft of this test, which used non-touching records and so
+  didn't actually exercise the chaining bug at all — worth knowing, since it
+  shows the regression check is real, not just passing by construction.
+
+  tests/test_cleaning.py, tests/test_features.py, tests/test_baseline.py —
+  oblast name mapping, gap-episode construction, chronological split ratios,
+  recency-weight formula, as-of target correctness, and the
+  weighted-percentile/mean helpers (including zero-weight edge cases).
+
+  All follow strict AAA structure with explicit # Arrange / # Act / # Assert
+  comments. Run with pytest from the repo root.
+
+❯ Great. Now update README with up-to-date description of the project
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Let me pull current, accurate figures before writing — the dataset size and
+  breakdown changed multiple times today.
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+⏺ Write(README.md)
+  ⎿  Added 134 lines, removed 62 lines
+      1  # Ukraine Air Raid Alerts: Real-Time Duration & Expiration Predi
+         ctor
+      2  
+      3 -Statistical and machine learning system for predicting remaining
+        - alert durations and inter-alert quiet times across Ukrainian ob
+        -lasts. Aligned with [PLAN.md](PLAN.md).                         
+      3 +Statistical and machine learning system for predicting remaining
+        + alert durations and inter-alert quiet times across Ukrainian ob
+        +lasts and raions, with a live Streamlit map and a historical dyn
+        +amics dashboard. Aligned with [PLAN.md](PLAN.md).               
+      4  
+      5  > **Important Disclaimer:** This project is a statistical experi
+         ment and research benchmark. It is **not** a civil defense tool 
+         and must **never** be used in place of official alerts from the 
+         State Emergency Service of Ukraine or official air raid siren ch
+         annels.
+      6  
+     ...
+       17  
+       18  ---
+       19  
+       20 -## 2. Methodology & Ladder of Models                          
+       20 +## 2. Data Pipeline                                           
+       21  
+       22 -Following **PLAN.md Section 5**, models are evaluated against 
+          -strong non-parametric baselines:                              
+       22 +The dataset is assembled from **three sources** with different
+          + coverage and reliability, merged into one canonical oblast-le
+          +vel episode table (`data.build_dataset.build_master_alerts_dat
+          +aset`, walked through step by step in [notebook 01](notebooks/
+          +01_model_training_pipeline.ipynb)):                           
+       23  
+       24 -1. **Empirical Conditional Quantile Baseline:** Non-parametric
+          - empirical conditional distribution derived from historical al
+          -erts that exceeded elapsed time $t$.                          
+       25 -2. **Kaplan-Meier Survival Baseline:** Estimation of $S(t) = P
+          -(D > t)$ with conditional survival probability $S(\Delta \mid 
+          -t) = \frac{S(t + \Delta)}{S(t)}$.                             
+       26 -3. **LightGBM Quantile Regressors:** Gradient-boosted quantile
+          - regressions at $\alpha \in \{0.10, 0.50, 0.90\}$ to predict m
+          -edian remaining time and calibrated uncertainty intervals $[P1
+          -0, P90]$.                                                     
+       27 -4. **LightGBM Binary Probability Classifiers:** Predicting exa
+          -ct calibrated probabilities:                                  
+       28 -   - Task A: $P(\text{ends within } 15 / 30 / 60 \text{ min})$
+       29 -   - Task B: $P(\text{starts within } 1 / 3 / 6 \text{ hours})
+          -$                                                             
+       24 +| Source | Role | Notes |                                     
+       25 +|---|---|---|                                                 
+       26 +| [Official GitHub dataset (Vadimkin)](https://github.com/Vadi
+          +mkin/ukrainian-air-raid-sirens-dataset) | Primary, deep histor
+          +y (Mar 2022 → ~5 days ago) | Government-reported sirens, all g
+          +ranularities |                                                
+       27 +| [alerts.in.ua API](https://devs.alerts.in.ua/) | Recent back
+          +fill (last ~30 days) + live status | Token-gated, cached and r
+          +ate-limited (see §2.3) |                                      
+       28 +| [Volunteer dataset (same repo)](https://github.com/Vadimkin/
+          +ukrainian-air-raid-sirens-dataset) | Narrow gap-fill only | A 
+          +*differently-measured* signal (eTryvoga channel monitoring) — 
+          +see §2.2 |                                                    
+       29  
+       30 +### 2.1 The granularity-shift bias, and the rollup fix        
+       31 +                                                              
+       32 +Starting around Aug–Nov 2025, Ukraine's official reporting shi
+          +fted from oblast-wide blanket alerts to localized raion/hromad
+          +a alerts. A naive `level == 'oblast'` filter makes alert *coun
+          +ts* collapse to near zero after that point — not because alert
+          +s stopped, but because they started being reported at finer gr
+          +anularity. `data.rollup.merge_intervals_to_episodes` fixes thi
+          +s by merging overlapping/touching sub-oblast alerts into oblas
+          +t-level episodes, tagging each as `oblast` (native) or `oblast
+          +_rollup` (derived) so the correction stays auditable rather th
+          +an hidden. This also guards against a real bug found and fixed
+          + during development: a handful of corrupt, never-closed source
+          + rows (one spanning 604 days) used to chain-merge everything b
+          +etween their start and end into one giant episode that then go
+          +t silently dropped — destroying up to a year and a half of oth
+          +erwise-valid data for some regions. Individual input records l
+          +onger than 24h are now filtered out *before* merging (regressi
+          +on-tested in `tests/test_rollup.py`).                         
+       33 +                                                              
+       34 +### 2.2 Why the volunteer dataset is scoped narrowly          
+       35 +                                                              
+       36 +Cross-checked oblast-for-oblast against the official rollup, t
+          +he volunteer feed reports far more, much shorter episodes that
+          + don't even align in time (e.g. Kharkiv, Aug 2026: ~490 episod
+          +es averaging ~19 min there vs. ~130 averaging ~290 min in the 
+          +official rollup) — a different detection methodology, not just
+          + a different granularity of the same events. It's used *only* 
+          +to fill the specific date gap left between the GitHub CSV's la
+          +st record and the alerts.in.ua backfill's earliest one, never 
+          +blended across the whole timeline.                            
+       37 +                                                              
+       38 +### 2.3 Live API: caching and rate limiting                   
+       39 +                                                              
+       40 +`ingestion.alerts_client` caches every alerts.in.ua response t
+          +o `data/cache/alerts_in_ua/` and enforces a **persisted slidin
+          +g-window call budget** per endpoint bucket (shared across sepa
+          +rate process runs, not just spacing between consecutive calls 
+          +— a plain per-call interval isn't enough to respect the server
+          +'s actual rolling 30-calls/10-min limit). History responses ar
+          +e also served from disk with no network call at all when young
+          +er than 2 hours, since that endpoint's window barely covers on
+          +e full 27-region pass.                                        
+       41 +                                                              
+       42 +### 2.4 Current dataset size                                  
+       43 +                                                              
+       44 +90,061 cleaned episodes across 24 oblasts (Crimea, Sevastopol,
+          + and Luhansk are excluded — see §6), spanning 2022-03-15 to to
+          +day with no uncovered gap: 56,648 native oblast-level, 32,835 
+          +rollup-derived, 578 from the volunteer gap-fill.              
+       45 +                                                              
+       46  ---
+       47  
+       33 -## 3. Dataset                                                 
+       48 +## 3. Methodology & Modeling                                  
+       49  
+       35 -- Source: [Ukrainian Air Raid Sirens Dataset (Vadimkin)](https
+          -://raw.githubusercontent.com/Vadimkin/ukrainian-air-raid-siren
+          -s-dataset/main/datasets/official_data_uk.csv)                 
+       36 -- Covers 299,000+ records from March 2022 to September 2026.  
+       37 -- Filtered to macroscopic oblast-level episodes ($65,172$ clea
+          -ned alert episodes across 24 oblasts).                        
+       38 -- Sub-minute technical glitches ($< 1$ min) and unbounded outl
+          -iers are removed.                                             
+       39 -- Validated with strict **point-in-time chronological train/te
+          -st split** (training on older data, testing on held-out recent
+          - months) to prevent future data leakage.                      
+       50 +Following **PLAN.md Section 5**, models are evaluated against 
+          +strong non-parametric baselines, with two further choices vali
+          +dated empirically (not assumed) in dedicated comparison notebo
+          +oks:                                                          
+       51  
+       52 +1. **Empirical Conditional Quantile Baseline** — non-parametri
+          +c conditional distribution from historical alerts that exceede
+          +d elapsed time $t$, supporting optional sample weights.       
+       53 +2. **Kaplan–Meier Survival Baseline** — $S(t) = P(D > t)$, con
+          +ditional survival $S(\Delta \mid t) = S(t+\Delta)/S(t)$, also 
+          +weight-aware (via lifelines' native `weights=`).              
+       54 +3. **LightGBM Quantile Regressors** — $\alpha \in \{0.10, 0.50
+          +, 0.90\}$ for median remaining time and $[P10, P90]$ intervals
+          +.                                                             
+       55 +4. **LightGBM Binary Probability Classifiers** — calibrated $P
+          +(\text{ends within } 15/30/60\text{ min})$ (Task A) and $P(\te
+          +xt{starts within } 1/3/6\text{ h})$ (Task B).                 
+       56 +                                                              
+       57 +**Recency weighting** ([notebook 02](notebooks/02_regime_compa
+          +rison.ipynb)): rather than hard-cutting training data at the o
+          +blast→raion reporting shift, every episode is weighted by `0.5
+          + ** (age_days / 60)` — an episode 60 days old counts half as m
+          +uch as a fresh one. Compared head-to-head against a hard regim
+          +e cutover (same models, same held-out recent test window), rec
+          +ency weighting won every metric comparison once the rollup bia
+          +s fix restored the full history it draws on.                  
+       58 +                                                              
+       59 +**Neighbor-region context** ([notebook 03](notebooks/03_neighb
+          +or_features.ipynb)): the quantile models (not the probability 
+          +classifiers, which showed no benefit) also take point-in-time 
+          +spatial features — how many of a region's direct neighbors, an
+          +d how many regions nationally, were active at that exact histo
+          +rical moment (`features.builder.compute_neighbor_active_featur
+          +es`, a leakage-safe backward as-of join, see §5). This improve
+          +d Task A and Task B quantile accuracy modestly (1–3% on MAE/pi
+          +nball loss).                                                  
+       60 +                                                              
+       61  ---
+       62  
+       43 -## 4. Project Structure                                       
+       63 +## 4. The App                                                 
+       64  
+       65 +```bash                                                       
+       66 +PYTHONPATH=src streamlit run app.py                           
+       67  ```
+       68 +                                                              
+       69 +Two tabs:                                                     
+       70 +                                                              
+       71 +- **🚨 Live Dashboard** — a **raion-level** choropleth (136 ra
+          +ions + Kyiv city + Sevastopol, with oblast borders overlaid) r
+          +eflecting true current alert locations, since oblast-wide aler
+          +ts are now rare (§2.1); a sidebar selector for oblast *or* a s
+          +pecific raion within it (raion predictions reuse the parent ob
+          +last's model, anchored to the raion's own live elapsed time — 
+          +raion-level training needs more accumulated history first); li
+          +ve/demo mode with a "Simulate Custom State" override for demos
+          +.                                                             
+       72 +- **📊 Statistics** — basic dynamics for the curious: a time-r
+          +ange picker (last day/week/month, any calendar year, or a cust
+          +om range) and a region picker (all of Ukraine or one oblast), 
+          +four summary numbers, and up to three charts (alerts-over-time
+          +, duration distribution, and — only for the national view — a 
+          +most-active-regions breakdown). Deliberately kept small rather
+          + than a kitchen-sink dashboard.                               
+       73 +                                                              
+       74 +Live status comes from alerts.in.ua's `/v1/alerts/active.json`
+          + when `ALERTS_IN_UA_TOKEN` is set (copy `.env.example` → `.env
+          +`), cascading both ways between granularities (a raion alert m
+          +arks its parent oblast active; an oblast-wide alert marks all 
+          +its raions active). Falls back to a realistic demo snapshot ot
+          +herwise.                                                      
+       75 +                                                              
+       76 +---                                                           
+       77 +                                                              
+       78 +## 5. Leakage Prevention                                      
+       79 +                                                              
+       80 +Every feature is computed from an explicit `as_of_ts`, using o
+          +nly information that would have been available at that exact h
+          +istorical moment — enforced with a **shift check** test suite 
+          +(PLAN.md §4.3): take a feature built at a fixed `as_of_ts`, mo
+          +ve the same input event across that boundary, and confirm the 
+          +feature only reacts once the event is in the past (`tests/test
+          +_leakage.py`). Covers the neighbor-context join, the point-in-
+          +time rolling-alert-count feature, as-of sampling never exceedi
+          +ng an episode's true known end, and the chronological train/te
+          +st split itself.                                              
+       81 +                                                              
+       82 +```bash                                                       
+       83 +pytest   # 45 tests: leakage, rollup merging (incl. the corrup
+          +t-record regression), cleaning, features, baselines           
+       84 +```                                                           
+       85 +                                                              
+       86 +---                                                           
+       87 +                                                              
+       88 +## 6. Known Limitations                                       
+       89 +                                                              
+       90 +- **Crimea and Luhansk** have no usable siren data in either s
+          +ource: Crimea has zero rows in 4.5 years of history (outside U
+          +krainian civil defense control), and Luhansk's last real recor
+          +d is from 2022-04-04 — both regions have had a "permanent sire
+          +n" since 2022 (Luhansk from 2022-04-04 16:45 UTC, Crimea from 
+          +2022-12-10 22:22 UTC) that was never logged as a discrete even
+          +t by either dataset. Not yet given separate handling in the mo
+          +del or map (tracked for a later iteration).                   
+       91 +- **Raion-level training** doesn't exist yet — the live map an
+          +d selector operate at raion granularity, but predictions still
+          + come from the parent oblast's model (clearly labeled in the U
+          +I).                                                           
+       92 +- **Historical data has no uncovered gap as of this writing**,
+          + but the alerts.in.ua backfill only reaches ~30 days back; if 
+          +the GitHub CSV's tail falls further behind than that *and* the
+          + volunteer dataset isn't refreshed, a gap could reopen — the n
+          +otebook's validation step reports this explicitly if it happen
+          +s.                                                            
+       93 +                                                              
+       94 +---                                                           
+       95 +                                                              
+       96 +## 7. Project Structure                                       
+       97 +                                                              
+       98 +```                                                           
+       99  .
+      100  ├── PLAN.md                               # Architecture and i
+           mplementation plan
+      101  ├── README.md                             # Project overview a
+           nd instructions
+      102  ├── requirements.txt                      # Project dependenci
+           es
+      103 +├── pytest.ini                            # Test configuration
+      104 +├── app.py                                # Streamlit app (Liv
+          +e Dashboard + Statistics tabs)                                
+      105 +├── .env.example                          # Copy to .env and s
+          +et ALERTS_IN_UA_TOKEN                                         
+      106  ├── data/
+       51 -│   ├── raw/                              # Immutable raw aler
+          -ts dataset                                                    
+       52 -│   │   └── official_data_uk.csv                              
+       53 -│   └── processed/                        # Parquet cleaned ep
+          -isodes (alerts & gaps)                                        
+      107 +│   ├── raw/                              # Immutable source d
+          +umps (official + volunteer CSVs)                              
+      108 +│   ├── processed/                        # Parquet cleaned ep
+          +isodes (alerts & gaps)                                        
+      109 +│   ├── cache/alerts_in_ua/               # Cached/rate-limite
+          +d API responses                                               
+      110 +│   └── geo/                              # Oblast + raion Geo
+          +JSON, SOURCES.md (provenance/license)                         
+      111  ├── notebooks/
+       55 -│   ├── 01_model_training_pipeline.ipynb  # End-to-end interac
+          -tive training & evaluation pipeline                           
+       56 -│   └── generate_notebook.py              # Notebook generator
+          - script                                                       
+      112 +│   ├── 01_model_training_pipeline.ipynb  # Data pipeline walk
+          +through, EDA, baseline/LightGBM training                      
+      113 +│   ├── 02_regime_comparison.ipynb        # Hard cutover vs. r
+          +ecency-weighted training comparison                           
+      114 +│   ├── 03_neighbor_features.ipynb        # With vs. without n
+          +eighbor-region context comparison                             
+      115 +│   └── generate_notebook*.py             # Notebook generator
+          + scripts (source of truth; regenerate, don't hand-edit)       
+      116  ├── src/alertpred/
+       58 -│   ├── __init__.py                                           
+       59 -│   ├── config.py                         # Constants, predict
+          -ion horizons, region mappings                                 
+      117 +│   ├── config.py                         # Constants, region 
+          +mappings, neighbor adjacency graph                            
+      118  │   ├── data/
+       61 -│   │   ├── __init__.py                                       
+       62 -│   │   └── cleaning.py                   # Data ingestion, cl
+          -eaning, UTC handling, episode builder                         
+      119 +│   │   ├── cleaning.py                   # Oblast-filtered cl
+          +eaning, volunteer-data loader, time split                     
+      120 +│   │   ├── rollup.py                     # Sub-oblast → oblas
+          +t interval merging (the bias fix)                             
+      121 +│   │   └── build_dataset.py              # Assembles the 3-so
+          +urce master dataset                                           
+      122 +│   ├── ingestion/                                            
+      123 +│   │   ├── alerts_client.py              # Cached, rate-limit
+          +ed alerts.in.ua HTTP client                                   
+      124 +│   │   ├── backfill.py                   # Per-region history
+          + fetch + rollup                                               
+      125 +│   │   ├── live.py                       # Live status (oblas
+          +t + raion, two-way cascade)                                   
+      126 +│   │   └── alerts_regions.py             # alerts.in.ua UID /
+          + status-order mappings                                        
+      127 +│   ├── geo/                                                  
+      128 +│   │   ├── oblasts.py                    # Oblast GeoJSON loa
+          +der (winding-order fix)                                       
+      129 +│   │   └── raions.py                     # Raion registry: sp
+          +atial join to parent oblast, name aliases                     
+      130  │   ├── features/
+       64 -│   │   ├── __init__.py                                       
+       65 -│   │   └── builder.py                    # "As-of" moment sam
+          -pling and point-in-time features                              
+      131 +│   │   └── builder.py                    # As-of sampling, re
+          +cency weights, neighbor-context features                      
+      132  │   ├── models/
+       67 -│   │   ├── __init__.py                                       
+       68 -│   │   ├── baseline.py                   # Empirical conditio
+          -nal quantiles & Kaplan-Meier estimators                       
+       69 -│   │   └── quantile_lgbm.py              # LightGBM quantile 
+          -regression & probability models pipeline                      
+      133 +│   │   ├── baseline.py                   # Empirical conditio
+          +nal quantiles & Kaplan-Meier (weight-aware)                   
+      134 +│   │   └── quantile_lgbm.py              # LightGBM quantile/
+          +probability models + inference pipeline                       
+      135  │   ├── evaluation/
+       71 -│   │   ├── __init__.py                                       
+      136  │   │   └── metrics.py                    # Pinball loss, cove
+           rage, MAE, Brier score, ROC-AUC
+      137 +│   ├── app/                                                  
+      138 +│   │   ├── map.py                        # Raion/oblast choro
+          +pleth figures                                                 
+      139 +│   │   ├── stats.py                      # Statistics tab    
+      140 +│   │   └── components.py                 # Probability chips,
+          + distribution curve                                           
+      141  │   └── train.py                          # Standalone CLI tra
+           ining & evaluation script
+      142 +├── tests/                                 # pytest suite (lea
+          +kage, rollup, cleaning, features, baselines)                  
+      143  └── models/
+      144      └── alertpred_pipeline.joblib         # Serialized product
+           ion pipeline ready for inference
+      145  ```
+      146  
+      147  ---
+      148  
+       80 -## 5. Quickstart                                              
+      149 +## 8. Quickstart                                              
+      150  
+      151  ### Environment Setup
+      152  
+      153  ```bash
+       85 -# Create virtual environment                                  
+      154  python3 -m venv .venv
+      155  source .venv/bin/activate
+       88 -                                                              
+       89 -# Install dependencies                                        
+      156  pip install -r requirements.txt
+      157  ```
+      158  
+       93 -### Running the Training Pipeline                             
+      159 +### Live Data (optional but recommended)                      
+      160  
+       95 -To train the models, run evaluation on the test set, and save 
+          -model artifacts:                                              
+       96 -                                                              
+      161  ```bash
+       98 -PYTHONPATH=src python -m alertpred.train --data data/raw/offic
+          -ial_data_uk.csv                                               
+      162 +cp .env.example .env                                          
+      163 +# Request a token at https://devs.alerts.in.ua/ and set ALERTS
+          +_IN_UA_TOKEN in .env                                          
+      164  ```
+      165  
+      101 -### Launch the Interactive Web App (MVP)                      
+      166 +Without a token, training falls back to the GitHub + volunteer
+          + sources only, and the app runs in demo mode.                 
+      167  
+      103 -Start the Streamlit application to explore the live map and re
+          -al-time expiration forecasts:                                 
+      168 +### Running the Training Pipeline                             
+      169  
+      170  ```bash
+      171 +PYTHONPATH=src python -m alertpred.train                      
+      172 +# Flags: --no-api-backfill (skip the live fetch), --half-life-
+          +days, --train-ratio                                           
+      173 +```                                                           
+      174 +                                                              
+      175 +### Launch the Interactive Web App                            
+      176 +                                                              
+      177 +```bash                                                       
+      178  PYTHONPATH=src streamlit run app.py
+      179  ```
+      180  
+      109 -### Interactive Jupyter Notebook                              
+      181 +### Run the Tests                                             
+      182  
+      111 -Open and explore the step-by-step pipeline:                   
+      183 +```bash                                                       
+      184 +pytest                                                        
+      185 +```                                                           
+      186  
+      187 +### Interactive Notebooks                                     
+      188 +                                                              
+      189  ```bash
+      190  jupyter notebook notebooks/01_model_training_pipeline.ipynb
+      191  ```
+      192  
+      193  ---
+      194  
+      119 -## 6. Sample Live Inference                                   
+      195 +## 9. Sample Live Inference                                   
+      196  
+      197  ```python
+      198  from alertpred.models.quantile_lgbm import AlertPredictionPipe
+           line
+      199 +from alertpred.ingestion.live import get_live_alerts_status   
+      200  
+      124 -# Load serialized pipeline                                    
+      201  pipeline = AlertPredictionPipeline.load("models/alertpred_pipe
+           line.joblib")
+      202  
+      203 +# Pass the current live_status snapshot so the model's neighbo
+          +r-context                                                     
+      204 +# features reflect what's actually happening right now, not a 
+      205 +# quiet-everywhere fallback.                                  
+      206 +live_status = get_live_alerts_status()                        
+      207 +                                                              
+      208  # Scenario 1: Active alert in Kyiv that has lasted 30 minutes
+      128 -res_active = pipeline.predict_active_alert(region_id="kyiv_cit
+          -y", elapsed_min=30.0)                                         
+      209 +res_active = pipeline.predict_active_alert(region_id="kyiv_cit
+          +y", elapsed_min=30.0, live_status=live_status)                
+      210  print(res_active)
+      130 -# Output:                                                     
+      131 -# Predicted remaining median: 41.6 min                        
+      132 -# Uncertainty range [P10, P90]: [2.9, 80.8] min               
+      133 -# Probabilities:                                              
+      134 -#   Ends within 15 min: 26.2%                                 
+      135 -#   Ends within 30 min: 39.6%                                 
+      136 -#   Ends within 60 min: 65.2%                                 
+      211 +# {'predicted_remaining_median_min': ..., 'predicted_range_p10
+          +_p90_min': [...],                                             
+      212 +#  'probabilities': {'prob_ends_within_15m': ..., 'prob_ends_w
+          +ithin_30m': ..., 'prob_ends_within_60m': ...}}                
+      213  
+      138 -# Scenario 2: Quiet region in Lviv quiet for 3 hours          
+      139 -res_quiet = pipeline.predict_quiet_region(region_id="lviv", el
+          -apsed_quiet_min=180.0)                                        
+      214 +# Scenario 2: Quiet region in Lviv, quiet for 3 hours         
+      215 +res_quiet = pipeline.predict_quiet_region(region_id="lviv", el
+          +apsed_quiet_min=180.0, live_status=live_status)               
+      216  print(res_quiet)
+      141 -# Output:                                                     
+      142 -# Predicted next alert gap: 2494.3 min (~41.5 hrs)            
+      143 -# Probabilities:                                              
+      144 -#   Starts within 1h: 3.0%                                    
+      145 -#   Starts within 3h: 6.7%                                    
+      146 -#   Starts within 6h: 10.7%                                   
+      147 -```                                                           
+      217   No newline at end of file
+      218 +# {'predicted_next_alert_gap_median_min': ..., 'predicted_rang
+          +e_p10_p90_min': [...],                                        
+      219 +#  'probabilities': {'prob_starts_within_1h': ..., 'prob_start
+          +s_within_3h': ..., 'prob_starts_within_6h': ...}}             
+      220 +```                                                           
+
+⏺ Let me verify the sample code in the README actually runs as written.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Confirmed working end-to-end, matches the documented output shape exactly.
+  Let's also verify the quickstart commands and project-structure file list are
+  accurate.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Flags match what's documented. README is fully updated and verified against
+  the real, current state of the project — every claim (dataset size, source
+  breakdown, CLI flags, sample inference output, test count) was checked against
+  live code rather than written from memory.
+
+  Key changes from the old README:
+  - New §2 (Data Pipeline) covers all three sources, the granularity-shift
+    rollup fix, why the volunteer dataset is scoped narrowly, and the
+    caching/rate-limiting design — with real current figures (90,061 episodes,
+    56,648/32,835/578 split)
+  - §3 now documents recency weighting and neighbor-context features as
+    validated choices (citing notebooks 02/03), not assumptions
+  - New §4 (The App) describes the raion-level map and the Statistics tab
+  - New §5 (Leakage Prevention) and §6 (Known Limitations) — the Luhansk/Crimea
+    permanent-siren gap, raion-level training not existing yet
+  - §7 (Project Structure) and §8 (Quickstart) rewritten to match the actual
+    current file tree and train.py CLI flags
+  - §9 sample inference re-verified by actually running it against the live
+    model
+
+❯ Just to clarify - when I do inference for specific raion, it gets mapped to
+  the whole oblast, right/
+
+⏺ Let me verify the exact mechanism in the current code before answering, rather
+  than go from memory.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ Yes, exactly right. Confirmed in the code:
+
+  pred = pipeline.predict_active_alert(selected_region_id,
+  elapsed_min=elapsed_min, live_status=live_status)
+
+  It's always selected_region_id (the parent oblast), never selected_raion_id —
+  there's no raion-level model to call. Two things stay raion-specific, though:
+
+  1. The elapsed time is the raion's own, not the oblast's.
+     elapsed_min/elapsed_quiet_min come from
+     live_status["raions"][selected_raion_id], so if Izium raion itself has been
+     quiet for 8 hours while Kharkiv oblast overall is under alert elsewhere,
+     the model gets "8 hours elapsed," not whatever the oblast's own state
+     happens to be.
+  2. The live map and the status banner/headline ("Quiet for X hours") are
+     genuinely raion-level, since those come straight from
+     live_status["raions"], no model involved.
+
+  What's not raion-specific: the model itself was trained on oblast-level
+  history (region_id is a categorical feature learned from the parent oblast's
+  episodes), and the neighbor-context features (neighbors_active_count etc.) use
+  OBLAST_NEIGHBORS[selected_region_id] — i.e. which oblasts border Kharkiv
+  oblast, not which raions border Izium raion.
+
+  So in short: real raion-level "how long has this been going on," fed into the
+  oblast's learned duration/gap patterns. It's a reasonable stopgap (the sidebar
+  caption and the #### Prediction model: ... note under the raion header both
+  say this explicitly in the UI), but it's not a true raion-level model — that
+  needs more accumulated raion-level history than the ~30-day alerts.in.ua
+  window currently gives us, which is exactly the scope question you flagged a
+  while back and we deferred.
+
+❯ Okay seems like I am almost done with all the changes. However I thought
+  about some feature engineering trick - what if we explicitly note when there
+  is night/morning alert and daytime alert? And also pay attention to the day
+  of the week. Maybe such attributes would help to learn the dynamics better.
+  Can we test this hypothese in the notebook
+
+⏺ Good hypothesis — note we already have cyclical hour_sin/cos and dow_sin/cos,
+  but those force a smooth circular encoding; explicit categorical buckets let
+  the tree split cleanly on "is this a night alert" in one step instead of
+  several. Also worth doing this on local Kyiv time, not UTC (which is what the
+  existing cyclical features use) — otherwise the buckets get shifted 2-3 hours
+  off real day/night. Let me build this properly: a reusable feature function,
+  then a new notebook testing it the same way we tested neighbor features.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(src/alertpred/features/builder.py)
+  ⎿  Added 33 lines
+      45      return features
+      46  
+      47  
+      48 +_TIME_OF_DAY_BINS = [-1, 5, 11, 17, 23]                        
+      49 +_TIME_OF_DAY_LABELS = ["night", "morning", "afternoon", "evenin
+         +g"]                                                            
+      50 +                                                               
+      51 +                                                               
+      52 +def compute_time_bucket_features(                              
+      53 +    timestamps: pd.Series,                                     
+      54 +    local_tz: str = "Europe/Kyiv",                             
+      55 +) -> pd.DataFrame:                                             
+      56 +    """                                                        
+      57 +    Explicit categorical time-of-day (night/morning/afternoon/e
+         +vening, each                                                   
+      58 +    a 6h block) and day-of-week, as LightGBM categoricals rathe
+         +r than the                                                     
+      59 +    smooth hour_sin/cos + dow_sin/cos encoding `compute_cyclica
+         +l_time_features`                                               
+      60 +    already provides. A tree model *can* approximate a block bo
+         +undary from                                                    
+      61 +    the cyclical features, but only by combining several splits
+         + across both                                                   
+      62 +    the sin and cos dimensions at once; an explicit bucket make
+         +s it a single                                                  
+      63 +    split - see notebooks/04_time_of_day_features.ipynb for whe
+         +ther that                                                      
+      64 +    actually helps.                                            
+      65 +                                                               
+      66 +    Computed on `local_tz` (default Kyiv), not UTC: a UTC-hour 
+         +bucket would                                                   
+      67 +    be shifted 2-3h off real local day/night depending on DST, 
+         +which is                                                       
+      68 +    exactly the kind of real-world pattern (e.g. overnight acti
+         +vity) this                                                     
+      69 +    feature is meant to capture - same convention notebook 01's
+         + diurnal EDA                                                   
+      70 +    already uses (`tz_convert('Europe/Kyiv')`).                
+      71 +    """                                                        
+      72 +    local_dt = pd.to_datetime(timestamps, utc=True).dt.tz_conve
+         +rt(local_tz)                                                   
+      73 +    features = pd.DataFrame(index=timestamps.index)            
+      74 +    features["time_of_day"] = pd.cut(                          
+      75 +        local_dt.dt.hour, bins=_TIME_OF_DAY_BINS, labels=_TIME_
+         +OF_DAY_LABELS                                                  
+      76 +    ).astype(str)                                              
+      77 +    features["day_of_week"] = local_dt.dt.day_name()           
+      78 +    return features                                            
+      79 +                                                               
+      80 +                                                               
+      81  def sample_as_of_alert_moments(
+      82      df_alerts: pd.DataFrame,
+      83      elapsed_steps: Optional[List[int]] = None,
+
+⏺ Let's quickly verify correctness before building the notebook.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Correct. Let's add quick tests for this, then build the comparison notebook.
+
+  Read 1 file (ctrl+o to expand)
+⏺ Update(tests/test_features.py)
+  ⎿  Added 40 lines
+       4  
+       5  from alertpred.features.builder import (
+       6      compute_recency_weight,
+       7 +    compute_time_bucket_features,                              
+       8      sample_as_of_alert_moments,
+       9      sample_as_of_gap_moments,
+      10  )
+     ...
+      14      return pd.Timestamp(s, tz="UTC")
+      15  
+      16  
+      17 +class TestComputeTimeBucketFeatures:                           
+      18 +    def test_bucket_is_based_on_kyiv_local_time_not_utc(self): 
+      19 +        # Arrange: 03:00 UTC is 05:00 in Kyiv during winter (UT
+         +C+2) - still                                                   
+      20 +        # "night" locally, even though a UTC-only bucket would 
+         +also say                                                       
+      21 +        # night here (pick a boundary case where UTC and local 
+         +disagree)                                                      
+      22 +        as_of = pd.Series([_ts("2026-01-01 10:00:00")])  # 12:0
+         +0 Kyiv local -> afternoon                                      
+      23 +                                                               
+      24 +        # Act                                                  
+      25 +        result = compute_time_bucket_features(as_of)           
+      26 +                                                               
+      27 +        # Assert: a naive UTC bucket would call 10:00 UTC "morn
+         +ing"; the                                                      
+      28 +        # correct Kyiv-local bucket is "afternoon"             
+      29 +        assert result.loc[0, "time_of_day"] == "afternoon"     
+      30 +                                                               
+      31 +    def test_each_boundary_hour_falls_into_the_expected_bucket(
+         +self):                                                         
+      32 +        # Arrange: local midnight, local noon, local 18:00 (win
+         +ter, UTC+2)                                                    
+      33 +        as_of = pd.Series([                                    
+      34 +            _ts("2025-12-31 22:00:00"),  # 00:00 Kyiv -> night 
+      35 +            _ts("2026-01-01 10:00:00"),  # 12:00 Kyiv -> aftern
+         +oon                                                            
+      36 +            _ts("2026-01-01 16:00:00"),  # 18:00 Kyiv -> evenin
+         +g                                                              
+      37 +        ])                                                     
+      38 +                                                               
+      39 +        # Act                                                  
+      40 +        result = compute_time_bucket_features(as_of)           
+      41 +                                                               
+      42 +        # Assert                                               
+      43 +        assert list(result["time_of_day"]) == ["night", "aftern
+         +oon", "evening"]                                               
+      44 +                                                               
+      45 +    def test_day_of_week_matches_the_local_calendar_day(self): 
+      46 +        # Arrange: a known Monday in Kyiv local time           
+      47 +        as_of = pd.Series([_ts("2026-01-05 03:00:00")])        
+      48 +                                                               
+      49 +        # Act                                                  
+      50 +        result = compute_time_bucket_features(as_of)           
+      51 +                                                               
+      52 +        # Assert                                               
+      53 +        assert result.loc[0, "day_of_week"] == "Monday"        
+      54 +                                                               
+      55 +                                                               
+      56  class TestComputeRecencyWeight:
+      57      def test_weight_at_the_reference_timestamp_itself_is_one(se
+          lf):
+      58          # Arrange
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Write(notebooks/generate_notebook_04.py)
+  ⎿  Wrote 264 lines to notebooks/generate_notebook_04.py
+       1 import json
+       2 from pathlib import Path
+       3
+       4 def create_notebook():
+       5     project_root = Path(__file__).resolve().parent.parent
+       6     cells = []
+       7
+       8     def add_md(source):
+       9         cells.append({
+      10             "cell_type": "markdown",
+     … +351 lines (ctrl+o to expand)
+
+⏺ Update(notebooks/generate_notebook_04.py)
+  ⎿  Added 1 line, removed 4 lines
+      118  (Kyiv-local, see `features.builder.compute_time_bucket_feature
+           s`) are the
+      119  new hypothesis.""")
+      120  
+      121 -    add_code("""for df in (train_a, test_a, train_b, test_b): 
+      122 -    pass  # placeholder - neighbor + time-bucket features atta
+          -ched below per dataframe                                      
+      123 -                                                              
+      124 -train_a = compute_neighbor_active_features(train_a, df_alerts,
+          - OBLAST_NEIGHBORS)                                            
+      121 +    add_code("""train_a = compute_neighbor_active_features(tra
+          +in_a, df_alerts, OBLAST_NEIGHBORS)                            
+      122  test_a = compute_neighbor_active_features(test_a, df_alerts, O
+           BLAST_NEIGHBORS)
+      123  train_b = compute_neighbor_active_features(train_b, df_alerts,
+            OBLAST_NEIGHBORS)
+      124  test_b = compute_neighbor_active_features(test_b, df_alerts, O
+           BLAST_NEIGHBORS)
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ Running in background — the larger dataset (90K+ episodes, more as-of samples)
+  is taking longer than 120s now. I'll wait for it to complete.
+
+⏺ Notebook 04 is built and running in the background now — testing explicit
+  time_of_day (Kyiv-local night/morning/afternoon/evening) and day_of_week
+  categoricals against the current production baseline (which already includes
+  the neighbor-context features from notebook 03). I'll report the results once
+  it finishes.
+
+❯ did it finish already
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Not yet — still running (process alive, started 7:02PM). Given the larger
+  dataset this is taking a few minutes. I'll let it finish and report back
+  rather than guess at results.
+
+⏺ Not done yet — the process is still actively running (confirmed via ps, not
+  stuck). Will check again shortly.
+
+⏺ Background command ".venv/bin/jupyter nbconvert --to notebook --execute
+--inplace notebooks/04_time_of_day_features.ipynb 2>&1 | tail -100" completed
+(exit code 0)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Finished, zero errors. Let's pull the actual results.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Finished — and this one's a genuine null result, not a close call. Real
+  numbers:
+
+  Task A (duration): worse by 0.1% MAE, 0.0% pinball — noise.
+  Task B (gap): better by 0.7% MAE, 0.6% pinball — a small nudge, but tiny.
+  Probability classifiers: essentially tied across all three horizons
+  (differences in the 4th decimal of Brier score).
+
+  Feature importance tells the real story: time_of_day ranked dead last or
+  near-last in both tasks (importance 29 and 28, out of totals around 700-800
+  for hour_sin/hour_cos/month). day_of_week did a bit better (124 and 88) but
+  still far below the cyclical features. The model barely touches the new
+  categoricals.
+
+  Interpretation: the existing cyclical encoding (hour_sin/cos, dow_sin/cos)
+  already captures essentially all the useful time-of-day and day-of-week signal
+  — LightGBM's tree splits approximate the circular boundary well enough in
+  practice that an explicit "is this night" column doesn't add information the
+  model didn't already have access to. The theoretical argument for buckets
+  (cleaner single-split boundaries) didn't translate into a measurable gain
+  here.
+
+  My recommendation: don't wire this into production. The Task B nudge is too
+  small to justify two more categorical features for no corresponding benefit
+  elsewhere, and parsimony matters — every added feature is more surface area to
+  maintain and more chances to overfit on a dataset this size. Good hypothesis
+  to test, honest answer: the existing encoding already covers it.
+
+  The function and its tests (compute_time_bucket_features in
+  features/builder.py, tests/test_features.py) stay in the codebase since
+  they're correct and reusable, just not adopted into the trained pipeline.
+
+⏺ Already handled in my previous message — this is a duplicate of the earlier
+  scheduled check-in. To recap: notebook 04 finished successfully (0 errors),
+  and the actual results were a null result — explicit time_of_day/day_of_week
+  categoricals gave negligible-to-no improvement over the existing cyclical
+  encoding (Task A slightly worse, Task B marginally better at ~0.6-0.7%, both
+  features ranked near the bottom of feature importance). My recommendation was
+  not to adopt them into production. Nothing further to run here.
+
+❯ good thing that we verified it before integrating into the app. The old
+  trained model is still used in app right?
+
+⏺ Let me verify this directly rather than assume — checking the saved model file
+  and its actual feature configuration.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Confirmed — yes, the app is still using the older model, exactly as it should
+  be.
+
+  - models/alertpred_pipeline.joblib is timestamped 16:29, which matches the
+    retrain after the corrupt-record rollup fix (the one with neighbor-context
+    features) — not touched since.
+  - Its actual loaded feature_cols for both tasks include
+    neighbors_active_count/neighbors_active_frac/national_active_count but no
+    time_of_day or day_of_week, confirming the time-bucket hypothesis never made
+    it into the saved pipeline.
+
+  This isn't a coincidence — notebook 04 only ever called .fit() on throwaway
+  LightGBMQuantileModel/LightGBMProbabilityModel instances for comparison
+  purposes; it never touched AlertPredictionPipeline, never called .save(), and
+  never ran train.py. There was no path by which it could have overwritten the
+  production model even accidentally. The app (and app.py's
+  load_trained_pipeline()) is reading the exact same file it was before this
+  experiment.
