@@ -7655,3 +7655,636 @@ df_retry.to_parquet('/tmp/retry_episodes.parquet')
   production model even accidentally. The app (and app.py's
   load_trained_pipeline()) is reading the exact same file it was before this
   experiment.
+
+❯ <ide_opened_file>The user opened the file
+  /Users/allakovalcuk/Agentic_AI/docs/ai_usage_notice.md in the IDE. This may
+  or may not be related to the current task.</ide_opened_file>
+
+❯ The alert in Kyiv was 20 mins ago but the app doesnt show it, why?
+
+⏺ Let me check the real live data right now, for both Kyiv City and Kyiv Oblast
+  (they're separate entities, which could already be part of the confusion), and
+  cross-check against the raw API response directly.
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+⏺ Found it — and it's a real architectural gap, not a parsing bug. Let me
+  confirm precisely before fixing.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ Confirmed exactly — and found the real mechanism. A truly fresh (uncached)
+  fetch shows Kyiv City's most recent alert ended at 16:12:38 UTC, and it's now
+  16:32 UTC — ~20 minutes ago, matching what you saw. But the app's "last known
+  alert end" comes from data/processed/cleaned_alerts.parquet, which is a
+  training-time snapshot — it only updates when someone manually runs train.py
+  (last done at 13:24 UTC today), so anything that happened after that is
+  invisible to the "Quiet for X hours" display and to the model's
+  elapsed_quiet_min input, even though the "is this active right now" status is
+  correctly live.
+
+  This is a real gap, not a one-off glitch. Let me fix it: for the region
+  currently being viewed, fetch its live history on demand (reusing the existing
+  cached/rate-limited client) and use whichever is more recent — the training
+  snapshot or the fresh fetch.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Let's add a cache_ttl_sec passthrough so callers can request fresher data for
+  interactive use.
+
+⏺ Update(src/alertpred/ingestion/backfill.py)
+  ⎿  Added 8 lines, removed 1 line
+      74      token: Optional[str] = None,
+      75      verbose: bool = True,
+      76      max_duration_hours: float = 72.0,
+      77 +    cache_ttl_sec: Optional[float] = None,                     
+      78  ) -> pd.DataFrame:
+      79      """
+      80      Fetch alert history for every oblast via alerts.in.ua and r
+          eturn a
+     ...
+       93      between them can otherwise get chained by the interval mer
+           ge into one
+       94      absurd multi-week "episode" instead of being recognized as
+            sustained
+       95      high activity.
+       96 +                                                              
+       97 +    `cache_ttl_sec`, if given, overrides `fetch_region_history
+          +`'s own                                                       
+       98 +    default (2h) - e.g. the app uses a short TTL when fresheni
+          +ng a single                                                   
+       99 +    region's "last known alert end" for interactive display, s
+          +ince that                                                     
+      100 +    default is tuned for bulk/training use where latency doesn
+          +'t matter.                                                    
+      101      """
+      102      regions = regions or OBLAST_UID
+      103      all_rows: List[dict] = []
+      104      errors: Dict[str, str] = {}
+      105      max_duration_min = max_duration_hours * 60.0
+      106 +    history_kwargs = {"cache_ttl_sec": cache_ttl_sec} if cache
+          +_ttl_sec is not None else {}                                  
+      107  
+      108      for i, (region_id, uid) in enumerate(regions.items(), star
+           t=1):
+      109          try:
+      103 -            payload = fetch_region_history(uid, period=period,
+          - token=token)                                                 
+      110 +            payload = fetch_region_history(uid, period=period,
+          + token=token, **history_kwargs)                               
+      111          except AlertsApiError as e:
+      112              errors[region_id] = str(e)
+      113              if verbose:
+
+⏺ Now let's wire this into app.py — fetch a fresh last-end for the currently
+  selected region and use whichever is more recent.
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+⏺ Now let's add the fresh-fetch function and merge it in right before that call.
+
+⏺ Update(app.py)
+  ⎿  Added 26 lines
+      60  last_alert_end_by_region = load_last_alert_end_by_region()
+      61  
+      62  
+      63 +@st.cache_data(ttl=900)                                        
+      64 +def fetch_fresh_last_alert_end(region_id: str):                
+      65 +    """Best-effort live freshening for one region: `last_alert_
+         +end_by_region`                                                 
+      66 +    comes from a training-time snapshot that's only as recent a
+         +s the last                                                     
+      67 +    `train.py` run (could be hours or days stale), so an alert 
+         +that both                                                      
+      68 +    started and ended since then is invisible to it even though
+         + it's long                                                     
+      69 +    over. Asks alerts.in.ua directly for this region's history 
+         +(cached only                                                   
+      70 +    15 min here - shorter than the client's own 2h default, tun
+         +ed for bulk/                                                   
+      71 +    training use - since this feeds an interactively-browsed "q
+         +uiet for X"                                                    
+      72 +    display) and returns its most recent completed alert's end 
+         +time, or                                                       
+      73 +    None if the token's missing or the call fails."""          
+      74 +    from alertpred.ingestion.alerts_regions import OBLAST_UID  
+      75 +    from alertpred.ingestion.backfill import fetch_all_region_h
+         +istories                                                       
+      76 +                                                               
+      77 +    uid = OBLAST_UID.get(region_id)                            
+      78 +    if uid is None:                                            
+      79 +        return None                                            
+      80 +    try:                                                       
+      81 +        df = fetch_all_region_histories(regions={region_id: uid
+         +}, verbose=False, cache_ttl_sec=900)                           
+      82 +    except Exception:                                          
+      83 +        return None                                            
+      84 +    if df.empty:                                               
+      85 +        return None                                            
+      86 +    return df["finished_at"].max()                             
+      87 +                                                               
+      88 +                                                               
+      89  @st.cache_data(ttl=600)
+      90  def load_alerts_df():
+      91      """Full processed episode table, for the Statistics tab."""
+
+⏺ Now let's call it for the selected region right before get_live_alerts_status
+  is invoked.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(app.py)
+  ⎿  Added 9 lines
+      152      sim_elapsed = 0.0
+      153      sim_quiet = 0.0
+      154  
+      155 +# Freshen the selected oblast's "last known alert end" beyond 
+          +the                                                           
+      156 +# training-time snapshot, so a very recent alert (ended after 
+          +the last                                                      
+      157 +# `train.py` run) isn't invisible to the "quiet for X" display
+          +/prediction.                                                  
+      158 +fresh_end = fetch_fresh_last_alert_end(selected_region_id)    
+      159 +if fresh_end is not None:                                     
+      160 +    stale_end = last_alert_end_by_region.get(selected_region_i
+          +d)                                                            
+      161 +    if stale_end is None or fresh_end > stale_end:            
+      162 +        last_alert_end_by_region = {**last_alert_end_by_region
+          +, selected_region_id: fresh_end}                              
+      163 +                                                              
+      164  # Fetch Live Status
+      165  live_status = get_live_alerts_status(last_alert_end_by_region=
+           last_alert_end_by_region)
+      166  
+
+⏺ Let me move those imports to the top for consistency with the rest of the
+  file's style.
+
+⏺ Update(app.py)
+  ⎿  Added 2 lines
+      16  )
+      17  from alertpred.models.quantile_lgbm import AlertPredictionPipel
+          ine
+      18  from alertpred.ingestion.live import get_live_alerts_status, IS
+          O_MAPPING
+      19 +from alertpred.ingestion.alerts_regions import OBLAST_UID      
+      20 +from alertpred.ingestion.backfill import fetch_all_region_histo
+         +ries                                                           
+      21  from alertpred.app.map import create_raion_map
+      22  from alertpred.app.components import render_probability_bars, c
+          reate_remaining_time_curve
+      23  from alertpred.app.stats import render_stats_tab
+
+⏺ Update(app.py)
+  ⎿  Removed 3 lines
+      73      training use - since this feeds an interactively-browsed "q
+          uiet for X"
+      74      display) and returns its most recent completed alert's end 
+          time, or
+      75      None if the token's missing or the call fails."""
+      76 -    from alertpred.ingestion.alerts_regions import OBLAST_UID  
+      77 -    from alertpred.ingestion.backfill import fetch_all_region_h
+         -istories                                                       
+      78 -                                                               
+      76      uid = OBLAST_UID.get(region_id)
+      77      if uid is None:
+      78          return None
+
+⏺ Now let's verify syntax and test in the browser.
+
+  Read 1 file, ran 2 shell commands (ctrl+o to expand)
+
+⏺ Fixed and verified live — "Quiet for 0.4 hours" (24 min), correctly matching
+  the real alert that ended ~20-22 minutes ago, instead of the stale multi-hour
+  figure from before.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Root cause confirmed and fixed. It wasn't a parsing bug —
+  is_active/elapsed_min were already correctly live. The problem was
+  last_alert_end_by_region (which drives "Quiet for X hours" and the model's
+  elapsed_quiet_min input) was sourced entirely from
+  data/processed/cleaned_alerts.parquet, a training-time snapshot only refreshed
+  when someone manually runs train.py (last run at 13:24 UTC). Anything that
+  happened after that — including your Kyiv City alert that ended at 16:12 UTC —
+  was invisible to it.
+
+  Fix: app.py now fetches a fresh, on-demand history check for whichever region
+  is currently selected (fetch_fresh_last_alert_end, 15-minute cache — safely
+  within the alerts.in.ua rate budget since it's only one region at a time) and
+  uses whichever is more recent: the training snapshot or the fresh fetch. Also
+  added a cache_ttl_sec passthrough to fetch_all_region_histories so this
+  interactive use case can ask for fresher data than the 2-hour default tuned
+  for bulk training fetches.
+
+  This only affects the oblast-level "quiet for X" display and prediction input.
+  Worth knowing: raion-level quiet-time in the live map still uses a flat
+  placeholder regardless (it never had real last-end tracking to begin with —
+  live.py passes None unconditionally for raions), so if you pick a specific
+  raion rather than "Whole Oblast," that number is still approximate. Didn't
+  touch that now since it's a separate, bigger piece of work (no raion-level
+  history source exists yet) — flag if you want that addressed too.
+
+❯ wait so you are saying when i ask for stats for some raion it shows me a
+  placeholder? Also wy would i need to fold back to training data, if its just
+  chronica for now, and it cannot consist of fresh data
+
+⏺ Two separate things to untangle — let me check the Statistics tab code to
+  answer precisely, not from memory.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ On the first question — clarifying, since these are two different parts of the
+  app:
+
+  The Statistics tab has no raion option at all — I just checked stats.py, its
+  region selector only builds from oblast-level REGION_MAPPING ("All of Ukraine"
+  or one oblast). So there's no placeholder issue there; it's simply not a
+  choice you can make.
+
+  The placeholder I meant is on the Live Dashboard, when you pick a specific
+  raion in the sidebar: the "Quiet for X hours" badge for that raion comes from
+  live.py's _build_statuses, which passes last_alert_end_by_region=None
+  unconditionally for raions — meaning it never had real last-end tracking to
+  begin with, raion or not. It's a flat 480.0 (8h) placeholder regardless of
+  reality. That's a separate, pre-existing gap from what I fixed for oblasts.
+
+  On the second question — you're right to push on this, let me be precise about
+  why the fallback exists at all:
+
+  It's not about freshness for its own sake — it's about depth. The live
+  alerts.in.ua history endpoint (month_ago) only looks back ~30 days. For a
+  region that's been genuinely quiet longer than that, the live fetch returns
+  nothing, and only the training snapshot (which holds full history back to
+  2022) can say anything at all about when its last alert actually was.
+
+  But here's the real problem with what I built: when the live fetch comes back
+  empty, I silently fall back to whatever the training parquet says — which
+  could itself be arbitrarily stale, or even wrong in ways we've already found
+  bugs for. Presenting that as a specific-sounding "Quiet for 11.3 hours" is
+  exactly the kind of false precision as the bug I just fixed, just one level
+  removed. If I don't actually know the answer beyond "no alert in the last 30
+  days," I shouldn't dress it up as a precise number from a snapshot of unknown
+  age.
+
+  Better design: when the live fetch is empty, say so honestly — "Quiet for 30+
+  days" (a real, live-sourced lower bound) — rather than quietly substituting a
+  possibly-ancient training value. Want me to fix it that way for both the
+  oblast display and extend real (not placeholder) tracking to raions, or just
+  the oblast one for now?
+
+❯ Yes do both so i can see the real data, not placeholders
+
+⏺ This needs real work on both sides. Let me design it properly: prefer live
+  data always when we can get it (exact if found, an honest "30+ days" lower
+  bound if the live 30-day window comes back empty), and extend the same
+  mechanism to raions by reusing the per-raion data the history fetch already
+  contains (it's just not currently exposed).
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Let's add a small public wrapper so app.py can reuse this parser without
+  importing a private function.
+
+⏺ Update(src/alertpred/ingestion/backfill.py)
+  ⎿  Added 8 lines
+      68      return rows
+      69  
+      70  
+      71 +def parse_oblast_episodes_from_payload(alert_objs: List[dict], 
+         +region_id: str) -> List[dict]:                                 
+      72 +    """Public wrapper around `_parse_alert_objects`, for caller
+         +s (e.g. the                                                    
+      73 +    app's live-freshness check) that already hold a raw history
+         + payload                                                       
+      74 +    (from `fetch_region_history`) and want the same oblast-leve
+         +l rollup                                                       
+      75 +    `fetch_all_region_histories` produces, without re-fetching.
+         +"""                                                            
+      76 +    return _parse_alert_objects(alert_objs, region_id)         
+      77 +                                                               
+      78 +                                                               
+      79  def fetch_all_region_histories(
+      80      period: str = "month_ago",
+      81      regions: Optional[Dict[str, int]] = None,
+
+⏺ Now let's rewrite the app's freshness logic. Let's view the current state
+  precisely.
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+⏺ Now let's replace this with the richer function covering both oblast and
+  raion, with honest lower-bound handling.
+
+⏺ Update(app.py)
+  ⎿  Added 50 lines, removed 17 lines
+       63  
+       64  
+       65  @st.cache_data(ttl=900)
+       66 -def fetch_fresh_last_alert_end(region_id: str):               
+       67 -    """Best-effort live freshening for one region: `last_alert
+          -_end_by_region`                                               
+       68 -    comes from a training-time snapshot that's only as recent 
+          -as the last                                                   
+       69 -    `train.py` run (could be hours or days stale), so an alert
+          - that both                                                    
+       70 -    started and ended since then is invisible to it even thoug
+          -h it's long                                                   
+       71 -    over. Asks alerts.in.ua directly for this region's history
+          - (cached only                                                 
+       72 -    15 min here - shorter than the client's own 2h default, tu
+          -ned for bulk/                                                 
+       73 -    training use - since this feeds an interactively-browsed "
+          -quiet for X"                                                  
+       74 -    display) and returns its most recent completed alert's end
+          - time, or                                                     
+       75 -    None if the token's missing or the call fails."""         
+       66 +def fetch_fresh_quiet_status(region_id: str, raion_id: "str | 
+          +None"):                                                       
+       67 +    """                                                       
+       68 +    Live "last known alert end" for the selected oblast and, i
+          +f one is                                                      
+       69 +    selected, a specific raion within it - replacing the train
+          +ing-snapshot                                                  
+       70 +    fallback entirely rather than patching over it, and giving
+          + raions real                                                  
+       71 +    tracking for the first time (they previously always showed
+          + a flat 8h                                                    
+       72 +    placeholder, never real data).                            
+       73 +                                                              
+       74 +    `last_alert_end_by_region` (loaded from `data/processed/cl
+          +eaned_alerts.parquet`)                                        
+       75 +    is a training-time snapshot, only as fresh as the last `tr
+          +ain.py` run,                                                  
+       76 +    and we've already hit real bugs that made it wrong - prese
+          +nting a                                                       
+       77 +    specific-looking "quiet for X hours" sourced from it is fa
+          +lse precision                                                 
+       78 +    dressed up as fact. alerts.in.ua's history endpoint only l
+          +ooks back                                                     
+       79 +    ~30 days, so it can't replace the snapshot's *depth*, but 
+          +within that                                                   
+       80 +    window it's live and verified, so it's preferred whenever 
+          +available.                                                    
+       81 +    When the live window comes back with nothing, that's still
+          + real                                                         
+       82 +    information - "no alert in at least 30 days" - just report
+          +ed honestly                                                   
+       83 +    as a lower bound instead of silently substituting a snapsh
+          +ot value of                                                   
+       84 +    unknown age.                                              
+       85 +                                                              
+       86 +    Returns (oblast_last_end, oblast_is_lower_bound, raion_las
+          +t_end, raion_is_lower_bound).                                 
+       87 +    A `None` end (only possible when there's no token / the ca
+          +ll fails)                                                     
+       88 +    means "no live data at all" - the caller falls back to the
+          + training                                                     
+       89 +    snapshot in that case, same as before.                    
+       90 +    """                                                       
+       91      uid = OBLAST_UID.get(region_id)
+       77 -    if uid is None:                                           
+       78 -        return None                                           
+       92 +    if uid is None or not get_api_token():                    
+       93 +        return None, False, None, False                       
+       94      try:
+       80 -        df = fetch_all_region_histories(regions={region_id: ui
+          -d}, verbose=False, cache_ttl_sec=900)                         
+       95 +        payload = fetch_region_history(uid, cache_ttl_sec=900)
+       96      except Exception:
+       82 -        return None                                           
+       83 -    if df.empty:                                              
+       84 -        return None                                           
+       85 -    return df["finished_at"].max()                            
+       97 +        return None, False, None, False                       
+       98  
+       99 +    alert_objs = payload.get("alerts", [])                    
+      100 +    thirty_days_ago = pd.Timestamp.now(tz="UTC") - pd.Timedelt
+          +a(days=30)                                                    
+      101  
+      102 +    oblast_episodes = parse_oblast_episodes_from_payload(alert
+          +_objs, region_id)                                             
+      103 +    oblast_ends = [ep["finished_at"] for ep in oblast_episodes
+          +]                                                             
+      104 +    oblast_end = max(oblast_ends) if oblast_ends else thirty_d
+          +ays_ago                                                       
+      105 +    oblast_is_lower_bound = not oblast_ends                   
+      106 +                                                              
+      107 +    raion_end, raion_is_lower_bound = None, False             
+      108 +    if raion_id is not None:                                  
+      109 +        raion_ends = [                                        
+      110 +            pd.to_datetime(a["finished_at"], utc=True)        
+      111 +            for a in alert_objs                               
+      112 +            if a.get("location_type") == "raion" and a.get("fi
+          +nished_at")                                                   
+      113 +            and API_NAME_TO_RAION_ID.get(a.get("location_title
+          +")) == raion_id                                               
+      114 +        ]                                                     
+      115 +        raion_end = max(raion_ends) if raion_ends else thirty_
+          +days_ago                                                      
+      116 +        raion_is_lower_bound = not raion_ends                 
+      117 +                                                              
+      118 +    return oblast_end, oblast_is_lower_bound, raion_end, raion
+          +_is_lower_bound                                               
+      119 +                                                              
+      120 +                                                              
+      121  @st.cache_data(ttl=600)
+      122  def load_alerts_df():
+      123      """Full processed episode table, for the Statistics tab.""
+           "
+
+⏺ Now let's update the imports.
+
+⏺ Update(app.py)
+  ⎿  Added 3 lines, removed 2 lines
+      17  from alertpred.models.quantile_lgbm import AlertPredictionPipel
+          ine
+      18  from alertpred.ingestion.live import get_live_alerts_status, IS
+          O_MAPPING
+      19  from alertpred.ingestion.alerts_regions import OBLAST_UID
+      20 -from alertpred.ingestion.backfill import fetch_all_region_histo
+         -ries                                                           
+      20 +from alertpred.ingestion.alerts_client import fetch_region_hist
+         +ory, get_api_token                                             
+      21 +from alertpred.ingestion.backfill import parse_oblast_episodes_
+         +from_payload                                                   
+      22  from alertpred.app.map import create_raion_map
+      23  from alertpred.app.components import render_probability_bars, c
+          reate_remaining_time_curve
+      24  from alertpred.app.stats import render_stats_tab
+      24 -from alertpred.geo.raions import RAIONS_BY_OBLAST, RAION_BY_ID 
+      25 +from alertpred.geo.raions import RAIONS_BY_OBLAST, RAION_BY_ID,
+         + API_NAME_TO_RAION_ID                                          
+      26  
+      27  
+      28  # Set Streamlit Page Config
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(app.py)
+  ⎿  Added 22 lines, removed 8 lines
+      185      sim_elapsed = 0.0
+      186      sim_quiet = 0.0
+      187  
+      188 -# Freshen the selected oblast's "last known alert end" beyond 
+          -the                                                           
+      189 -# training-time snapshot, so a very recent alert (ended after 
+          -the last                                                      
+      190 -# `train.py` run) isn't invisible to the "quiet for X" display
+          -/prediction.                                                  
+      191 -fresh_end = fetch_fresh_last_alert_end(selected_region_id)    
+      192 -if fresh_end is not None:                                     
+      193 -    stale_end = last_alert_end_by_region.get(selected_region_i
+          -d)                                                            
+      194 -    if stale_end is None or fresh_end > stale_end:            
+      195 -        last_alert_end_by_region = {**last_alert_end_by_region
+          -, selected_region_id: fresh_end}                              
+      188 +# Prefer live data over the training-time snapshot for the sel
+          +ected                                                         
+      189 +# oblast (and raion, if one is selected) - see fetch_fresh_qui
+          +et_status's                                                   
+      190 +# docstring for why a stale fallback isn't good enough on its 
+          +own.                                                          
+      191 +oblast_end, oblast_is_lower_bound, raion_end, raion_is_lower_b
+          +ound = fetch_fresh_quiet_status(                              
+      192 +    selected_region_id, selected_raion_id                     
+      193 +)                                                             
+      194 +if oblast_end is not None:                                    
+      195 +    last_alert_end_by_region = {**last_alert_end_by_region, se
+          +lected_region_id: oblast_end}                                 
+      196  
+      197  # Fetch Live Status
+      198  live_status = get_live_alerts_status(last_alert_end_by_region=
+           last_alert_end_by_region)
+      199  
+      200 +# Raion quiet-time has no equivalent input into get_live_alert
+          +s_status                                                      
+      201 +# (it always used a flat 480min placeholder for raions - see t
+          +he chat                                                       
+      202 +# discussion), so it's set directly here from the live fetch a
+          +bove.                                                         
+      203 +if (                                                          
+      204 +    selected_raion_id is not None                             
+      205 +    and raion_end is not None                                 
+      206 +    and selected_raion_id in live_status["raions"]            
+      207 +    and not live_status["raions"][selected_raion_id]["is_activ
+          +e"]                                                           
+      208 +):                                                            
+      209 +    now_utc = datetime.datetime.now(datetime.timezone.utc)    
+      210 +    live_status["raions"][selected_raion_id]["elapsed_quiet_mi
+          +n"] = max(                                                    
+      211 +        0.0, (now_utc - raion_end).total_seconds() / 60.0     
+      212 +    )                                                         
+      213 +                                                              
+      214  # Apply simulation override if active (to the raion if one is 
+           selected, else the whole oblast)
+      215  if enable_sim_override:
+      216      sim_state = {
+
+⏺ Now let's update the display text to show the "+" when it's a lower bound
+  rather than a confirmed exact value.
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+⏺ Update(app.py)
+  ⎿  Added 2 lines
+      270          if selected_raion_id is not None:
+      271              region_state = live_status["raions"].get(selected_
+           raion_id, {"is_active": False, "elapsed_min": 0, "elapsed_quie
+           t_min": 480})
+      272              display_name = f"{selected_raion_label.split(' (')
+           [0]} ({selected_meta['en']})"
+      273 +            quiet_is_lower_bound = raion_is_lower_bound and ra
+          +ion_end is not None                                           
+      274          else:
+      275              region_state = live_status["regions"].get(selected
+           _region_id, {"is_active": False, "elapsed_min": 0, "elapsed_qu
+           iet_min": 240})
+      276              display_name = selected_meta["en"]
+      277 +            quiet_is_lower_bound = oblast_is_lower_bound and o
+          +blast_end is not None                                         
+      278  
+      279          is_active = region_state["is_active"]
+      280          elapsed_min = region_state["elapsed_min"]
+
+⏺ Update(app.py)
+  ⎿  Added 2 lines
+      279          is_active = region_state["is_active"]
+      280          elapsed_min = region_state["elapsed_min"]
+      281          elapsed_quiet_min = region_state["elapsed_quiet_min"]
+      282 +        if enable_sim_override:                               
+      283 +            quiet_is_lower_bound = False  # an explicit simula
+          +ted value is exact by definition                              
+      284  
+      285          st.subheader(display_name)
+      286          if selected_raion_id is not None:
+
+⏺ Now let's update the display text to show the "+" suffix when appropriate.
+
+⏺ Update(app.py)
+  ⎿  Added 4 lines, removed 1 line
+      323  
+      324          else:
+      325              quiet_hours = elapsed_quiet_min / 60.0
+      326 -            st.success(f"✅ **NO ACTIVE ALERT** · Quiet for **
+          -{quiet_hours:.1f} hours**")                                   
+      326 +            bound_suffix = "+" if quiet_is_lower_bound else ""
+      327 +            st.success(f"✅ **NO ACTIVE ALERT** · Quiet for **
+          +{quiet_hours:.1f}{bound_suffix} hours**")                     
+      328 +            if quiet_is_lower_bound:                          
+      329 +                st.caption("No alert found in alerts.in.ua's ~
+          +30-day history window - this is a lower bound, not an exact ti
+          +me.")                                                         
+      330  
+      331              # Inference for Quiet Period
+      332              pred = pipeline.predict_quiet_region(selected_regi
+           on_id, elapsed_quiet_min=elapsed_quiet_min, live_status=live_s
+           tatus)
+
+⏺ Let's verify syntax and test end-to-end in the browser.
+
+  Read 1 file, ran 3 shell commands (ctrl+o to expand)
+
+⏺ Now let's test raion-level tracking — picking a quiet oblast and a specific
+  raion within it.
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+⏺ Raion tracking now shows real data (23.7 hours, not the old flat 8h
+  placeholder). Let's verify the lower-bound branch logic directly too, since
+  finding a live 30+-day-quiet region to test against isn't guaranteed.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Logic confirmed correct in isolation. Let's run the full test suite once more
+  to make sure nothing broke, then clean up.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ Both fixed and verified live. Summary:
+
+  ingestion/backfill.py: added parse_oblast_episodes_from_payload(), a public
+  wrapper exposing the same rollup logic fetch_all_region_histories already used
+  internally, so app.py can reuse it against a raw payload it fetches once
+  rather than re-fetching.
+
+  app.py: replaced the old "max(stale, fresh)" patch with
+  fetch_fresh_quiet_status(), which:
+  - Fetches the selected oblast's live history once and derives both the
+    oblast-level rollup end and (if a raion is selected) that specific raion's
+    own end from the same raw payload — raions get real tracking for the first
+    time, instead of the flat 8h placeholder live.py always used for them.
+  - Always prefers live data over the training snapshot now, not just when it
+    happens to be newer.
+  - When the live 30-day window comes back empty, it doesn't silently borrow a
+    training value of unknown trustworthiness — it reports an honest "30+
+    hours"-style lower bound (shown as X.X+ hours with a caption explaining
+    why), since that's genuinely all we can verify live.
+
+  Verified live, both cases:
+  - Kyiv City: "Quiet for 0.5 hours" — exact, live-confirmed.
+  - A specific Lviv raion (Zolochivskyi): "Quiet for 23.7 hours" — real,
+    non-placeholder, raion-specific data where it used to always show a flat 8h.
+  - The lower-bound branch logic independently confirmed correct (empty payload
+    → 30-day floor, is_lower_bound=True).
+
+  48 tests still pass, no console errors in the browser, no regressions.
